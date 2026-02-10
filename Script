@@ -585,4 +585,4 @@ closeBtn.MouseButton1Click:Connect(function()
     gui:Destroy()
 end)
 
-print("🎨 Blender ToolBox carregada! Digite algo 
+print("🎨 Blender ToolBox carregada! Digite algo")
