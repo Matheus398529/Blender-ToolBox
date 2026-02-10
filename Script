@@ -1,3 +1,4 @@
+
 -- Serviços
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
@@ -289,6 +290,273 @@ local function createModelCard(assetData)
         end)
         
         -- Método 2: AssetDelivery (fallback)
+        if not success1 then
+            pcall(function()
+                thumbnail.Image = string.format("https://assetdelivery.roblox.com/v1/asset/?id=%d", assetData.id)
+            end)
+        end
+        
+        -- Método 3: Direct AssetId (último fallback)
+        if thumbnail.Image == "rbxasset://textures/ui/GuiImagePlaceholder.png" then
+            pcall(function()
+                thumbnail.Image = string.format("rbxassetid://%d", assetData.id)
+            end)
+        end
+    end)
+    
+    -- Nome do modelo
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, -10, 0, 35)
+    nameLabel.Position = UDim2.new(0, 5, 0, 110)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = assetData.name or "Modelo sem nome"
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.Font = Enum.Font.SourceSans
+    nameLabel.TextSize = 13
+    nameLabel.TextWrapped = true
+    nameLabel.TextYAlignment = Enum.TextYAlignment.Top
+    nameLabel.Parent = card
+    
+    -- Botão de inserir
+    local insertBtn = Instance.new("TextButton")
+    insertBtn.Size = UDim2.new(1, -10, 0, 25)
+    insertBtn.Position = UDim2.new(0, 5, 1, -30)
+    insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    insertBtn.Text = "Inserir"
+    insertBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    insertBtn.Font = Enum.Font.SourceSansBold
+    insertBtn.TextSize = 14
+    insertBtn.BorderSizePixel = 0
+    insertBtn.Parent = card
+    
+    local insertCorner = Instance.new("UICorner")
+    insertCorner.CornerRadius = UDim.new(0, 5)
+    insertCorner.Parent = insertBtn
+    
+    -- Hover effect
+    insertBtn.MouseEnter:Connect(function()
+        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 100)
+    end)
+    
+    insertBtn.MouseLeave:Connect(function()
+        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    end)
+    
+    -- Inserir modelo
+    insertBtn.MouseButton1Click:Connect(function()
+        insertBtn.Text = "Inserindo..."
+        insertBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+        
+        spawn(function()
+            local success, result = pcall(function()
+                local model = InsertService:LoadAsset(assetData.id)
+                local item = model:GetChildren()[1]
+                
+                if item then
+                    item.Parent = workspace
+                    
+                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        local hrp = player.Character.HumanoidRootPart
+                        
+                        if item:IsA("Model") and item.PrimaryPart then
+                            item:SetPrimaryPartCFrame(hrp.CFrame * CFrame.new(0, 0, -5))
+                        elseif item:IsA("BasePart") then
+                            item.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
+                        elseif item:IsA("Model") then
+                            item:MoveTo(hrp.Position + (hrp.CFrame.LookVector * 5))
+                        end
+                    end
+                end
+                
+                model:Destroy()
+                return true
+            end)
+            
+            wait(0.3)
+            
+            if success then
+                insertBtn.Text = "✓ Inserido"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+                wait(1)
+                insertBtn.Text = "Inserir"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+            else
+                insertBtn.Text = "✗ Erro"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+                warn("Erro ao inserir:", result)
+                wait(1)
+                insertBtn.Text = "Inserir"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+            end
+        end)
+    end)
+end
+
+-- Função MELHORADA para buscar na API do Roblox com múltiplas tentativas
+local function searchToolbox(keyword)
+    clearResults()
+    statusLabel.Text = "🔄 Buscando modelos..."
+    
+    local searchTerm = keyword
+    if searchTerm == "" then
+        searchTerm = "model"
+    end
+    
+    spawn(function()
+        local allModels = {}
+        local foundCount = 0
+        
+        -- MÉTODO 1: API de Catálogo (Primária)
+        local success1, response1 = pcall(function()
+            local apiUrl = string.format(
+                "https://catalog.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120&sortType=Relevance",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(apiUrl)
+        end)
+        
+        if success1 then
+            local decoded = HttpService:JSONDecode(response1)
+            if decoded and decoded.data then
+                for _, item in ipairs(decoded.data) do
+                    if item.id and item.name then
+                        table.insert(allModels, {id = item.id, name = item.name})
+                    end
+                end
+            end
+        end
+        
+        -- MÉTODO 2: API de Develop (Secundária - para mais resultados)
+        local success2, response2 = pcall(function()
+            local devUrl = string.format(
+                "https://develop.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(devUrl)
+        end)
+        
+        if success2 then
+            local decoded2 = HttpService:JSONDecode(response2)
+            if decoded2 and decoded2.data then
+                for _, item in ipairs(decoded2.data) do
+                    if item.id and item.name then
+                        -- Evitar duplicatas
+                        local isDuplicate = false
+                        for _, existing in ipairs(allModels) do
+                            if existing.id == item.id then
+                                isDuplicate = true
+                                break
+                            end
+                        end
+                        if not isDuplicate then
+                            table.insert(allModels, {id = item.id, name = item.name})
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- MÉTODO 3: API Avatar (para itens específicos)
+        local success3, response3 = pcall(function()
+            local avatarUrl = string.format(
+                "https://avatar.roblox.com/v1/catalog/items/search?keyword=%s&limit=100",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(avatarUrl)
+        end)
+        
+        if success3 then
+            local decoded3 = HttpService:JSONDecode(response3)
+            if decoded3 and decoded3.data then
+                for _, item in ipairs(decoded3.data) do
+                    if item.id and item.name and item.itemType == "Asset" then
+                        local isDuplicate = false
+                        for _, existing in ipairs(allModels) do
+                            if existing.id == item.id then
+                                isDuplicate = true
+                                break
+                            end
+                        end
+                        if not isDuplicate then
+                            table.insert(allModels, {id = item.id, name = item.name})
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Criar cards para todos os modelos encontrados
+        if #allModels > 0 then
+            statusLabel.Text = string.format("✅ %d modelos encontrados", #allModels)
+            
+            for i, modelData in ipairs(allModels) do
+                createModelCard(modelData)
+                foundCount = foundCount + 1
+                
+                -- Pequena pausa para não sobrecarregar
+                if i % 10 == 0 then
+                    wait(0.1)
+                end
+            end
+            
+            scrollFrame.CanvasSize = UDim2.new(0, 0, 0, gridLayout.AbsoluteContentSize.Y + 10)
+        else
+            statusLabel.Text = "❌ Nenhum modelo encontrado. Tente outra busca."
+        end
+        
+        -- Mensagem de diagnóstico
+        print(string.format("📊 Busca concluída: %d modelos encontrados", foundCount))
+        print("Método 1 (Catalog):", success1 and "✅" or "❌")
+        print("Método 2 (Develop):", success2 and "✅" or "❌")
+        print("Método 3 (Avatar):", success3 and "✅" or "❌")
+    end)
+end
+
+-- =================== Criar botões de categoria ===================
+for i, cat in ipairs(categories) do
+    local catBtn = Instance.new("TextButton")
+    catBtn.Size = UDim2.new(0, 80, 1, 0)
+    catBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    catBtn.Text = cat.name
+    catBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    catBtn.Font = Enum.Font.SourceSans
+    catBtn.TextSize = 14
+    catBtn.BorderSizePixel = 0
+    catBtn.Parent = categoryFrame
+    
+    local catCorner = Instance.new("UICorner")
+    catCorner.CornerRadius = UDim.new(0, 5)
+    catCorner.Parent = catBtn
+    
+    catBtn.MouseButton1Click:Connect(function()
+        currentCategory = cat.keyword
+        searchBox.Text = cat.keyword
+        searchToolbox(cat.keyword)
+        
+        -- Highlight categoria selecionada
+        for _, btn in ipairs(categoryFrame:GetChildren()) do
+            if btn:IsA("TextButton") then
+                btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            end
+        end
+        catBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    end)
+end
+
+-- =================== Eventos de busca ===================
+searchBtn.MouseButton1Click:Connect(function()
+    local searchText = searchBox.Text
+    if searchText ~= "" then
+        searchToolbox(searchText)
+    else
+        searchToolbox("model")
+    end
+end)
+
+searchBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        if searchBox.Text ~= "" then
+       ivery (fallback)
         if not success1 then
             pcall(function()
                 thumbnail.Image = string.format("https://assetdelivery.roblox.com/v1/asset/?id=%d", assetData.id)
