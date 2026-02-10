@@ -1,0 +1,588 @@
+-- Serviços
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local InsertService = game:GetService("InsertService")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+
+-- =================== GUI ===================
+local gui = Instance.new("ScreenGui")
+gui.Name = "BlenderToolBoxGUI"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+gui.Parent = CoreGui
+
+-- =================== Frame principal ===================
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 450, 0, 550)
+mainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = mainFrame
+
+-- =================== Título ===================
+local titleFrame = Instance.new("Frame")
+titleFrame.Name = "TitleFrame"
+titleFrame.Size = UDim2.new(1, 0, 0, 40)
+titleFrame.Position = UDim2.new(0, 0, 0, 0)
+titleFrame.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+titleFrame.BorderSizePixel = 0
+titleFrame.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 10)
+titleCorner.Parent = titleFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -80, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "Blender ToolBox"
+titleLabel.TextColor3 = Color3.fromRGB(255,255,255)
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.TextSize = 22
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleFrame
+
+-- =================== Botões minimizar e fechar ===================
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size = UDim2.new(0, 35, 0, 35)
+minimizeBtn.Position = UDim2.new(1, -75, 0, 2)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(200,200,200)
+minimizeBtn.Text = "-"
+minimizeBtn.Font = Enum.Font.SourceSansBold
+minimizeBtn.TextSize = 24
+minimizeBtn.BorderSizePixel = 0
+minimizeBtn.Parent = titleFrame
+
+local minCorner = Instance.new("UICorner")
+minCorner.CornerRadius = UDim.new(0, 6)
+minCorner.Parent = minimizeBtn
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 35, 0, 35)
+closeBtn.Position = UDim2.new(1, -35, 0, 2)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.SourceSansBold
+closeBtn.TextSize = 20
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = titleFrame
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = closeBtn
+
+-- =================== Conteúdo interno ===================
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, 0, 1, -50)
+contentFrame.Position = UDim2.new(0, 0, 0, 50)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = mainFrame
+
+-- =================== Categorias ===================
+local categoryFrame = Instance.new("Frame")
+categoryFrame.Size = UDim2.new(1, -20, 0, 35)
+categoryFrame.Position = UDim2.new(0, 10, 0, 5)
+categoryFrame.BackgroundTransparency = 1
+categoryFrame.Parent = contentFrame
+
+local categoryLayout = Instance.new("UIListLayout")
+categoryLayout.FillDirection = Enum.FillDirection.Horizontal
+categoryLayout.Padding = UDim.new(0, 5)
+categoryLayout.Parent = categoryFrame
+
+local categories = {
+    {name = "Tudo", keyword = ""},
+    {name = "Armas", keyword = "weapon"},
+    {name = "Veículos", keyword = "vehicle"},
+    {name = "Móveis", keyword = "furniture"},
+    {name = "Natureza", keyword = "nature"}
+}
+
+local currentCategory = ""
+
+-- =================== Barra de pesquisa ===================
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -20, 0, 35)
+searchBox.Position = UDim2.new(0, 10, 0, 45)
+searchBox.BackgroundColor3 = Color3.fromRGB(50,50,50)
+searchBox.TextColor3 = Color3.fromRGB(255,255,255)
+searchBox.PlaceholderText = "🔍 Pesquisar na Toolbox do Roblox..."
+searchBox.PlaceholderColor3 = Color3.fromRGB(150,150,150)
+searchBox.Font = Enum.Font.SourceSans
+searchBox.TextSize = 16
+searchBox.ClearTextOnFocus = false
+searchBox.BorderSizePixel = 0
+searchBox.Parent = contentFrame
+
+local searchCorner = Instance.new("UICorner")
+searchCorner.CornerRadius = UDim.new(0, 6)
+searchCorner.Parent = searchBox
+
+-- Botão de buscar
+local searchBtn = Instance.new("TextButton")
+searchBtn.Size = UDim2.new(0, 80, 0, 35)
+searchBtn.Position = UDim2.new(1, -100, 0, 45)
+searchBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+searchBtn.Text = "Buscar"
+searchBtn.TextColor3 = Color3.fromRGB(255,255,255)
+searchBtn.Font = Enum.Font.SourceSansBold
+searchBtn.TextSize = 16
+searchBtn.BorderSizePixel = 0
+searchBtn.Parent = contentFrame
+
+local searchBtnCorner = Instance.new("UICorner")
+searchBtnCorner.CornerRadius = UDim.new(0, 6)
+searchBtnCorner.Parent = searchBtn
+
+-- =================== Status Label ===================
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 20)
+statusLabel.Position = UDim2.new(0, 10, 0, 85)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "💡 Digite algo e clique em Buscar"
+statusLabel.TextColor3 = Color3.fromRGB(150,150,150)
+statusLabel.Font = Enum.Font.SourceSans
+statusLabel.TextSize = 14
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = contentFrame
+
+-- =================== ScrollFrame ===================
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Size = UDim2.new(1, -20, 1, -115)
+scrollFrame.Position = UDim2.new(0, 10, 0, 110)
+scrollFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+scrollFrame.BorderSizePixel = 0
+scrollFrame.ScrollBarThickness = 8
+scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(255, 165, 0)
+scrollFrame.Parent = contentFrame
+
+local scrollCorner = Instance.new("UICorner")
+scrollCorner.CornerRadius = UDim.new(0, 6)
+scrollCorner.Parent = scrollFrame
+
+local gridLayout = Instance.new("UIGridLayout")
+gridLayout.CellSize = UDim2.new(0, 130, 0, 160)
+gridLayout.CellPadding = UDim2.new(0, 5, 0, 5)
+gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+gridLayout.Parent = scrollFrame
+
+-- =================== Toggle ===================
+local toggleBtn = Instance.new("ImageButton")
+toggleBtn.Size = UDim2.new(0, 60, 0, 60)
+toggleBtn.Position = UDim2.new(0, 10, 0, 10)
+toggleBtn.BackgroundTransparency = 1
+toggleBtn.Image = "rbxassetid://128572885618611"
+toggleBtn.Parent = gui
+
+local clickSound = Instance.new("Sound")
+clickSound.SoundId = "rbxassetid://140691817123595"
+clickSound.Volume = 1
+clickSound.Parent = toggleBtn
+
+-- =================== Função de arrastar ===================
+local function makeDraggable(guiObject, dragHandle)
+    local dragging = false
+    local dragInput
+    local dragStart
+    local startPos
+
+    local function update(input)
+        if dragging then
+            local delta = input.Position - dragStart
+            guiObject.Position = UDim2.new(
+                startPos.X.Scale, 
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale, 
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end
+
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = guiObject.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    dragHandle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput then
+            update(input)
+        end
+    end)
+    
+    return function() return dragging end
+end
+
+-- =================== SISTEMA DE BUSCA MELHORADO ===================
+
+-- Função para limpar resultados
+local function clearResults()
+    for _, child in ipairs(scrollFrame:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+end
+
+-- Função para criar card de modelo
+local function createModelCard(assetData)
+    local card = Instance.new("Frame")
+    card.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    card.BorderSizePixel = 0
+    card.Parent = scrollFrame
+    
+    local cardCorner = Instance.new("UICorner")
+    cardCorner.CornerRadius = UDim.new(0, 8)
+    cardCorner.Parent = card
+    
+    -- Thumbnail
+    local thumbnail = Instance.new("ImageLabel")
+    thumbnail.Size = UDim2.new(1, -10, 0, 100)
+    thumbnail.Position = UDim2.new(0, 5, 0, 5)
+    thumbnail.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    thumbnail.BorderSizePixel = 0
+    thumbnail.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
+    thumbnail.Parent = card
+    
+    local thumbCorner = Instance.new("UICorner")
+    thumbCorner.CornerRadius = UDim.new(0, 6)
+    thumbCorner.Parent = thumbnail
+    
+    -- Tentar carregar thumbnail de múltiplas fontes
+    spawn(function()
+        -- Método 1: API de thumbnails
+        local success1 = pcall(function()
+            local thumbUrl = string.format(
+                "https://thumbnails.roblox.com/v1/assets?assetIds=%d&size=150x150&format=Png",
+                assetData.id
+            )
+            local response = game:HttpGet(thumbUrl)
+            local data = HttpService:JSONDecode(response)
+            if data and data.data and data.data[1] and data.data[1].imageUrl then
+                thumbnail.Image = data.data[1].imageUrl
+            end
+        end)
+        
+        -- Método 2: AssetDelivery (fallback)
+        if not success1 then
+            pcall(function()
+                thumbnail.Image = string.format("https://assetdelivery.roblox.com/v1/asset/?id=%d", assetData.id)
+            end)
+        end
+        
+        -- Método 3: Direct AssetId (último fallback)
+        if thumbnail.Image == "rbxasset://textures/ui/GuiImagePlaceholder.png" then
+            pcall(function()
+                thumbnail.Image = string.format("rbxassetid://%d", assetData.id)
+            end)
+        end
+    end)
+    
+    -- Nome do modelo
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, -10, 0, 35)
+    nameLabel.Position = UDim2.new(0, 5, 0, 110)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = assetData.name
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.Font = Enum.Font.SourceSans
+    nameLabel.TextSize = 13
+    nameLabel.TextWrapped = true
+    nameLabel.TextYAlignment = Enum.TextYAlignment.Top
+    nameLabel.Parent = card
+    
+    -- Botão de inserir
+    local insertBtn = Instance.new("TextButton")
+    insertBtn.Size = UDim2.new(1, -10, 0, 25)
+    insertBtn.Position = UDim2.new(0, 5, 1, -30)
+    insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    insertBtn.Text = "Inserir"
+    insertBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    insertBtn.Font = Enum.Font.SourceSansBold
+    insertBtn.TextSize = 14
+    insertBtn.BorderSizePixel = 0
+    insertBtn.Parent = card
+    
+    local insertCorner = Instance.new("UICorner")
+    insertCorner.CornerRadius = UDim.new(0, 5)
+    insertCorner.Parent = insertBtn
+    
+    -- Hover effect
+    insertBtn.MouseEnter:Connect(function()
+        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 100)
+    end)
+    
+    insertBtn.MouseLeave:Connect(function()
+        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    end)
+    
+    -- Inserir modelo
+    insertBtn.MouseButton1Click:Connect(function()
+        insertBtn.Text = "Inserindo..."
+        insertBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+        
+        spawn(function()
+            local success, result = pcall(function()
+                local model = InsertService:LoadAsset(assetData.id)
+                local item = model:GetChildren()[1]
+                
+                if item then
+                    item.Parent = workspace
+                    
+                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        local hrp = player.Character.HumanoidRootPart
+                        
+                        if item:IsA("Model") and item.PrimaryPart then
+                            item:SetPrimaryPartCFrame(hrp.CFrame * CFrame.new(0, 0, -5))
+                        elseif item:IsA("BasePart") then
+                            item.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
+                        elseif item:IsA("Model") then
+                            item:MoveTo(hrp.Position + (hrp.CFrame.LookVector * 5))
+                        end
+                    end
+                end
+                
+                model:Destroy()
+                return true
+            end)
+            
+            wait(0.3)
+            
+            if success then
+                insertBtn.Text = "✓ Inserido"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+                wait(1)
+                insertBtn.Text = "Inserir"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+            else
+                insertBtn.Text = "✗ Erro"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+                warn("Erro ao inserir:", result)
+                wait(1)
+                insertBtn.Text = "Inserir"
+                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+            end
+        end)
+    end)
+end
+
+-- Função MELHORADA para buscar na API do Roblox com múltiplas tentativas
+local function searchToolbox(keyword)
+    clearResults()
+    statusLabel.Text = "🔄 Buscando modelos..."
+    
+    local searchTerm = keyword
+    if searchTerm == "" then
+        searchTerm = "model"
+    end
+    
+    spawn(function()
+        local allModels = {}
+        local foundCount = 0
+        
+        -- MÉTODO 1: API de Catálogo (Primária)
+        local success1, response1 = pcall(function()
+            local apiUrl = string.format(
+                "https://catalog.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120&sortType=Relevance",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(apiUrl)
+        end)
+        
+        if success1 then
+            local decoded = HttpService:JSONDecode(response1)
+            if decoded and decoded.data then
+                for _, item in ipairs(decoded.data) do
+                    table.insert(allModels, {id = item.id, name = item.name})
+                end
+            end
+        end
+        
+        -- MÉTODO 2: API de Develop (Secundária - para mais resultados)
+        local success2, response2 = pcall(function()
+            local devUrl = string.format(
+                "https://develop.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(devUrl)
+        end)
+        
+        if success2 then
+            local decoded2 = HttpService:JSONDecode(response2)
+            if decoded2 and decoded2.data then
+                for _, item in ipairs(decoded2.data) do
+                    -- Evitar duplicatas
+                    local isDuplicate = false
+                    for _, existing in ipairs(allModels) do
+                        if existing.id == item.id then
+                            isDuplicate = true
+                            break
+                        end
+                    end
+                    if not isDuplicate then
+                        table.insert(allModels, {id = item.id, name = item.name})
+                    end
+                end
+            end
+        end
+        
+        -- MÉTODO 3: API Avatar (para itens específicos)
+        local success3, response3 = pcall(function()
+            local avatarUrl = string.format(
+                "https://avatar.roblox.com/v1/catalog/items/search?keyword=%s&limit=100",
+                HttpService:UrlEncode(searchTerm)
+            )
+            return game:HttpGet(avatarUrl)
+        end)
+        
+        if success3 then
+            local decoded3 = HttpService:JSONDecode(response3)
+            if decoded3 and decoded3.data then
+                for _, item in ipairs(decoded3.data) do
+                    local isDuplicate = false
+                    for _, existing in ipairs(allModels) do
+                        if existing.id == item.id then
+                            isDuplicate = true
+                            break
+                        end
+                    end
+                    if not isDuplicate and item.itemType == "Asset" then
+                        table.insert(allModels, {id = item.id, name = item.name})
+                    end
+                end
+            end
+        end
+        
+        -- Criar cards para todos os modelos encontrados
+        if #allModels > 0 then
+            statusLabel.Text = string.format("✅ %d modelos encontrados", #allModels)
+            
+            for i, modelData in ipairs(allModels) do
+                createModelCard(modelData)
+                foundCount = foundCount + 1
+                
+                -- Pequena pausa para não sobrecarregar
+                if i % 10 == 0 then
+                    wait(0.1)
+                end
+            end
+            
+            scrollFrame.CanvasSize = UDim2.new(0, 0, 0, gridLayout.AbsoluteContentSize.Y + 10)
+        else
+            statusLabel.Text = "❌ Nenhum modelo encontrado. Tente outra busca."
+        end
+        
+        -- Mensagem de diagnóstico
+        print(string.format("📊 Busca concluída: %d modelos encontrados", foundCount))
+        print("Método 1 (Catalog):", success1 and "✅" or "❌")
+        print("Método 2 (Develop):", success2 and "✅" or "❌")
+        print("Método 3 (Avatar):", success3 and "✅" or "❌")
+    end)
+end
+
+-- =================== Criar botões de categoria ===================
+for i, cat in ipairs(categories) do
+    local catBtn = Instance.new("TextButton")
+    catBtn.Size = UDim2.new(0, 80, 1, 0)
+    catBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    catBtn.Text = cat.name
+    catBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    catBtn.Font = Enum.Font.SourceSans
+    catBtn.TextSize = 14
+    catBtn.BorderSizePixel = 0
+    catBtn.Parent = categoryFrame
+    
+    local catCorner = Instance.new("UICorner")
+    catCorner.CornerRadius = UDim.new(0, 5)
+    catCorner.Parent = catBtn
+    
+    catBtn.MouseButton1Click:Connect(function()
+        currentCategory = cat.keyword
+        searchBox.Text = cat.keyword
+        searchToolbox(cat.keyword)
+        
+        -- Highlight categoria selecionada
+        for _, btn in ipairs(categoryFrame:GetChildren()) do
+            if btn:IsA("TextButton") then
+                btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            end
+        end
+        catBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+    end)
+end
+
+-- =================== Eventos de busca ===================
+searchBtn.MouseButton1Click:Connect(function()
+    local searchText = searchBox.Text
+    if searchText ~= "" then
+        searchToolbox(searchText)
+    else
+        searchToolbox("model")
+    end
+end)
+
+searchBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        if searchBox.Text ~= "" then
+            searchToolbox(searchBox.Text)
+        else
+            searchToolbox("model")
+        end
+    end
+end)
+
+-- =================== Aplicar arrasto ===================
+local toggleDragging = makeDraggable(toggleBtn, toggleBtn)
+makeDraggable(mainFrame, titleFrame)
+
+-- =================== Toggle click ===================
+toggleBtn.MouseButton1Click:Connect(function()
+    if not toggleDragging() then
+        clickSound:Play()
+        mainFrame.Visible = not mainFrame.Visible
+    end
+end)
+
+-- =================== Botões de controle ===================
+local minimized = false
+minimizeBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    contentFrame.Visible = not minimized
+    
+    if minimized then
+        mainFrame.Size = UDim2.new(0, 450, 0, 40)
+    else
+        mainFrame.Size = UDim2.new(0, 450, 0, 550)
+    end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+print("🎨 Blender ToolBox carregada! Digite algo 
