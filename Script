@@ -1,856 +1,1851 @@
+-- Proteção contra execução múltipla
+if _G.BlenderAnimLiteCore then return end
+_G.BlenderAnimLiteCore = true
 
--- Serviços
-local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
-local InsertService = game:GetService("InsertService")
+-- VERIFICAÇÃO OBRIGATÓRIA DO MODELO DUMMY
+local workspace = game:GetService("Workspace")
+local dummyModel = workspace:FindFirstChild("Dummy")
+
+if not dummyModel then
+    warn("ERRO: Modelo 'Dummy' não encontrado no Workspace!")
+    warn("O script Blender Animator Lite requer um modelo chamado 'Dummy' para funcionar.")
+    warn("Por favor, adicione um modelo chamado 'Dummy' no Workspace e execute o script novamente.")
+    return
+end
+
+print("Modelo 'Dummy' encontrado! Iniciando Blender Animator Lite...")
+
+-- ========================================
+-- SISTEMA DE ANIMAÇÃO
+-- ========================================
+
+local RS = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
+local animationData = {}
+local timelineTime = 0
+local timeStep = 0.5
+local partsToRecord = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+local initialPose = {}
+local isPlaying = false
+local currentSpeed = 1.0
+local easingStyle = "Linear"
+local easingDirection = "Out"
+local currentMode = "Botao"
+local isLooping = false
+local keyframeMarkers = {}
+local copiedKeyframe = nil
+local selectedKeyframes = {}
+local animationHistory = {}
+local historyIndex = 0
+local maxHistory = 50
 
+-- Salvar pose inicial
+for _, partName in ipairs(partsToRecord) do
+    local part = dummyModel:FindFirstChild(partName)
+    if part then
+        initialPose[partName] = part.CFrame
+    end
+end
+
+-- Sistema de Histórico (Undo/Redo)
+local function saveToHistory()
+    -- Remover histórico futuro se estamos no meio da pilha
+    while #animationHistory > historyIndex do
+        table.remove(animationHistory)
+    end
+    
+    -- Salvar estado atual
+    local state = {
+        data = {},
+        time = timelineTime
+    }
+    
+    for time, keyframe in pairs(animationData) do
+        state.data[time] = {}
+        for partName, cf in pairs(keyframe) do
+            state.data[time][partName] = cf
+        end
+    end
+    
+    table.insert(animationHistory, state)
+    historyIndex = #animationHistory
+    
+    -- Limitar tamanho do histórico
+    if #animationHistory > maxHistory then
+        table.remove(animationHistory, 1)
+        historyIndex = historyIndex - 1
+    end
+end
+
+-- Undo (Desfazer)
+local function undo()
+    if historyIndex > 1 then
+        historyIndex = historyIndex - 1
+        local state = animationHistory[historyIndex]
+        
+        animationData = {}
+        for time, keyframe in pairs(state.data) do
+            animationData[time] = {}
+            for partName, cf in pairs(keyframe) do
+                animationData[time][partName] = cf
+            end
+        end
+        
+        timelineTime = state.time
+        return true
+    end
+    return false
+end
+
+-- Redo (Refazer)
+local function redo()
+    if historyIndex < #animationHistory then
+        historyIndex = historyIndex + 1
+        local state = animationHistory[historyIndex]
+        
+        animationData = {}
+        for time, keyframe in pairs(state.data) do
+            animationData[time] = {}
+            for partName, cf in pairs(keyframe) do
+                animationData[time][partName] = cf
+            end
+        end
+        
+        timelineTime = state.time
+        return true
+    end
+    return false
+end
+
+-- Função de Easing
+local function applyEasing(t, style, direction)
+    if style == "Linear" then
+        return math.floor(t * 5) / 5
+    elseif style == "Sine" then
+        if direction == "In" then
+            return 1 - math.cos(t * math.pi / 2)
+        elseif direction == "Out" then
+            return math.sin(t * math.pi / 2)
+        else -- InOut
+            return -(math.cos(math.pi * t) - 1) / 2
+        end
+    elseif style == "Quad" then
+        if direction == "In" then
+            return t * t
+        elseif direction == "Out" then
+            return 1 - (1 - t) * (1 - t)
+        else -- InOut
+            return t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
+        end
+    elseif style == "Cubic" then
+        if direction == "In" then
+            return t * t * t
+        elseif direction == "Out" then
+            return 1 - math.pow(1 - t, 3)
+        else -- InOut
+            return t < 0.5 and 4 * t * t * t or 1 - math.pow(-2 * t + 2, 3) / 2
+        end
+    elseif style == "Elastic" then
+        local c4 = (2 * math.pi) / 3
+        if direction == "In" then
+            return t == 0 and 0 or (t == 1 and 1 or -math.pow(2, 10 * t - 10) * math.sin((t * 10 - 10.75) * c4))
+        elseif direction == "Out" then
+            return t == 0 and 0 or (t == 1 and 1 or math.pow(2, -10 * t) * math.sin((t * 10 - 0.75) * c4) + 1)
+        else -- InOut
+            local c5 = (2 * math.pi) / 4.5
+            return t == 0 and 0 or (t == 1 and 1 or (t < 0.5 and -(math.pow(2, 20 * t - 10) * math.sin((20 * t - 11.125) * c5)) / 2 or (math.pow(2, -20 * t + 10) * math.sin((20 * t - 11.125) * c5)) / 2 + 1))
+        end
+    elseif style == "Bounce" then
+        if direction == "Out" then
+            local n1 = 7.5625
+            local d1 = 2.75
+            if t < 1 / d1 then
+                return n1 * t * t
+            elseif t < 2 / d1 then
+                t = t - 1.5 / d1
+                return n1 * t * t + 0.75
+            elseif t < 2.5 / d1 then
+                t = t - 2.25 / d1
+                return n1 * t * t + 0.9375
+            else
+                t = t - 2.625 / d1
+                return n1 * t * t + 0.984375
+            end
+        elseif direction == "In" then
+            return 1 - applyEasing(1 - t, "Bounce", "Out")
+        else -- InOut
+            return t < 0.5 and (1 - applyEasing(1 - 2 * t, "Bounce", "Out")) / 2 or (1 + applyEasing(2 * t - 1, "Bounce", "Out")) / 2
+        end
+    else
+        return t * t * (3 - 2 * t) -- Smooth (padrão)
+    end
+end
+
+-- Adicionar Keyframe
+local function addKeyframe()
+    local keyframe = {}
+    for _, partName in ipairs(partsToRecord) do
+        local part = dummyModel:FindFirstChild(partName)
+        if part then
+            keyframe[partName] = part.CFrame
+        end
+    end
+    animationData[timelineTime] = keyframe
+    saveToHistory()
+    return timelineTime
+end
+
+-- Deletar Keyframe
+local function deleteKeyframe(time)
+    if animationData[time] then
+        animationData[time] = nil
+        saveToHistory()
+        return true
+    end
+    return false
+end
+
+-- Copiar Keyframe
+local function copyKeyframe(time)
+    if animationData[time] then
+        copiedKeyframe = {}
+        for partName, cf in pairs(animationData[time]) do
+            copiedKeyframe[partName] = cf
+        end
+        return true
+    end
+    return false
+end
+
+-- Colar Keyframe
+local function pasteKeyframe(time)
+    if copiedKeyframe then
+        animationData[time] = {}
+        for partName, cf in pairs(copiedKeyframe) do
+            animationData[time][partName] = cf
+        end
+        saveToHistory()
+        return true
+    end
+    return false
+end
+
+-- Inverter Animação (Mirror)
+local function mirrorAnimation()
+    for time, keyframe in pairs(animationData) do
+        local newKeyframe = {}
+        for partName, cf in pairs(keyframe) do
+            local mirroredName = partName
+            if partName == "Left Arm" then
+                mirroredName = "Right Arm"
+            elseif partName == "Right Arm" then
+                mirroredName = "Left Arm"
+            elseif partName == "Left Leg" then
+                mirroredName = "Right Leg"
+            elseif partName == "Right Leg" then
+                mirroredName = "Left Leg"
+            end
+            
+            -- Espelhar CFrame
+            local pos = cf.Position
+            local x, y, z = cf:ToEulerAnglesXYZ()
+            newKeyframe[mirroredName] = CFrame.new(-pos.X, pos.Y, pos.Z) * CFrame.Angles(x, -y, -z)
+        end
+        animationData[time] = newKeyframe
+    end
+    saveToHistory()
+end
+
+-- Reverter Animação (Reverse)
+local function reverseAnimation()
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    if #keys < 2 then return false end
+    
+    local maxTime = keys[#keys]
+    local newData = {}
+    
+    for _, time in ipairs(keys) do
+        local newTime = maxTime - time
+        newData[newTime] = animationData[time]
+    end
+    
+    animationData = newData
+    saveToHistory()
+    return true
+end
+
+-- Limpar todas as animações
+local function clearAllKeyframes()
+    animationData = {}
+    saveToHistory()
+end
+
+-- Interpolar entre keyframes (adicionar frames intermediários)
+local function interpolateKeyframes(startTime, endTime, steps)
+    if not animationData[startTime] or not animationData[endTime] then
+        return false
+    end
+    
+    local stepSize = (endTime - startTime) / (steps + 1)
+    
+    for i = 1, steps do
+        local t = startTime + (stepSize * i)
+        local alpha = i / (steps + 1)
+        alpha = applyEasing(alpha, easingStyle, easingDirection)
+        
+        animationData[t] = {}
+        for partName, _ in pairs(animationData[startTime]) do
+            local cfStart = animationData[startTime][partName]
+            local cfEnd = animationData[endTime][partName]
+            animationData[t][partName] = cfStart:Lerp(cfEnd, alpha)
+        end
+    end
+    
+    saveToHistory()
+    return true
+end
+
+-- Escalar tempo da animação
+local function scaleAnimationTime(factor)
+    local newData = {}
+    for time, keyframe in pairs(animationData) do
+        newData[time * factor] = keyframe
+    end
+    animationData = newData
+    saveToHistory()
+end
+
+-- Mover keyframe para novo tempo
+local function moveKeyframe(oldTime, newTime)
+    if animationData[oldTime] and not animationData[newTime] then
+        animationData[newTime] = animationData[oldTime]
+        animationData[oldTime] = nil
+        saveToHistory()
+        return true
+    end
+    return false
+end
+
+-- Salvar animação como JSON
+local function saveAnimationToJSON()
+    local data = {
+        version = "1.0",
+        keyframes = {},
+        metadata = {
+            speed = currentSpeed,
+            easing = easingStyle,
+            direction = easingDirection,
+            loop = isLooping
+        }
+    }
+    
+    for time, keyframe in pairs(animationData) do
+        data.keyframes[tostring(time)] = {}
+        for partName, cf in pairs(keyframe) do
+            local px, py, pz = cf.Position.X, cf.Position.Y, cf.Position.Z
+            local rx, ry, rz = cf:ToEulerAnglesXYZ()
+            data.keyframes[tostring(time)][partName] = {
+                position = {px, py, pz},
+                rotation = {rx, ry, rz}
+            }
+        end
+    end
+    
+    return HttpService:JSONEncode(data)
+end
+
+-- Carregar animação de JSON
+local function loadAnimationFromJSON(jsonString)
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(jsonString)
+    end)
+    
+    if not success then return false end
+    
+    animationData = {}
+    
+    if data.metadata then
+        currentSpeed = data.metadata.speed or 1.0
+        easingStyle = data.metadata.easing or "Linear"
+        easingDirection = data.metadata.direction or "Out"
+        isLooping = data.metadata.loop or false
+    end
+    
+    for timeStr, keyframe in pairs(data.keyframes) do
+        local time = tonumber(timeStr)
+        animationData[time] = {}
+        
+        for partName, transform in pairs(keyframe) do
+            local pos = transform.position
+            local rot = transform.rotation
+            animationData[time][partName] = CFrame.new(pos[1], pos[2], pos[3]) * 
+                                           CFrame.Angles(rot[1], rot[2], rot[3])
+        end
+    end
+    
+    saveToHistory()
+    return true
+end
+
+-- Obter informações da animação
+local function getAnimationInfo()
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    return {
+        totalKeyframes = #keys,
+        duration = #keys > 0 and keys[#keys] or 0,
+        startTime = #keys > 0 and keys[1] or 0,
+        endTime = #keys > 0 and keys[#keys] or 0,
+        speed = currentSpeed,
+        easing = easingStyle,
+        direction = easingDirection,
+        looping = isLooping
+    }
+end
+
+-- Play Animation
+local function playAnimation()
+    if not next(animationData) then return end
+    
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    local maxTime = keys[#keys]
+    local startTime = tick()
+    isPlaying = true
+    
+    RS:BindToRenderStep("PlayAnimBLL", 201, function()
+        if not isPlaying then
+            RS:UnbindFromRenderStep("PlayAnimBLL")
+            return
+        end
+        
+        local elapsed = (tick() - startTime) * currentSpeed
+        
+        -- Loop logic
+        if isLooping and elapsed > maxTime then
+            startTime = tick()
+            elapsed = 0
+        end
+        
+        -- Atualizar posição do handle na timeline
+        local progress = math.clamp(elapsed / maxTime, 0, 1)
+        local timelineWidth = _G.BlenderTimeline.AbsoluteSize.X
+        local handleWidth = _G.BlenderTimelineHandle.AbsoluteSize.X
+        local newPos = progress * (timelineWidth - handleWidth)
+        _G.BlenderTimelineHandle.Position = UDim2.new(0, newPos, 0.5, -25)
+        
+        local before, after
+        for i = 1, #keys - 1 do
+            if elapsed >= keys[i] and elapsed <= keys[i + 1] then
+                before = keys[i]
+                after = keys[i + 1]
+                break
+            end
+        end
+        
+        if before and after then
+            local cfA = animationData[before]
+            local cfB = animationData[after]
+            
+            local alpha = (elapsed - before) / (after - before)
+            alpha = applyEasing(alpha, easingStyle, easingDirection)
+            
+            for _, partName in ipairs(partsToRecord) do
+                local part = dummyModel:FindFirstChild(partName)
+                if part and cfA[partName] and cfB[partName] then
+                    part.CFrame = cfA[partName]:Lerp(cfB[partName], alpha)
+                end
+            end
+        else
+            if elapsed > maxTime and not isLooping then
+                stopAnimation()
+            end
+        end
+    end)
+end
+
+-- Stop Animation
+function stopAnimation()
+    isPlaying = false
+    RS:UnbindFromRenderStep("PlayAnimBLL")
+end
+
+-- Reset Pose
+local function resetPose()
+    stopAnimation()
+    for _, partName in ipairs(partsToRecord) do
+        local part = dummyModel:FindFirstChild(partName)
+        if part and initialPose[partName] then
+            part.CFrame = initialPose[partName]
+        end
+    end
+end
+
+-- Gerar código de animação base
+local function generateAnimationDataCode()
+    if not next(animationData) then return "" end
+    
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    local output = "local animationData = {\n"
+    
+    for _, t in ipairs(keys) do
+        output = output .. "    [" .. t .. "] = {\n"
+        for partName, cf in pairs(animationData[t]) do
+            local px, py, pz = cf.Position.X, cf.Position.Y, cf.Position.Z
+            local rx, ry, rz = cf:ToEulerAnglesXYZ()
+            output = output .. string.format("        ['%s'] = CFrame.new(%.4f, %.4f, %.4f) * CFrame.Angles(%.4f, %.4f, %.4f),\n",
+                partName, px, py, pz, rx, ry, rz)
+        end
+        output = output .. "    },\n"
+    end
+    output = output .. "}\n"
+    
+    return output
+end
+
+-- Exportar Animação para LocalScript (BOTÃO)
+local function exportAnimationButtonLocal()
+    if not next(animationData) then return "" end
+    
+    local output = "-- Blender Animator Lite - LOCAL SCRIPT (Botao)\n"
+    output = output .. "-- Coloque este script em StarterPlayer > StarterPlayerScripts\n\n"
+    output = output .. "local RS = game:GetService('RunService')\n"
+    output = output .. "local Players = game:GetService('Players')\n"
+    output = output .. "local player = Players.LocalPlayer\n"
+    output = output .. "local character = player.Character or player.CharacterAdded:Wait()\n\n"
+    output = output .. generateAnimationDataCode()
+    output = output .. [[
+
+local function playAnimation()
+    local parts = {}
+    for _, partName in ipairs({'Head', 'Torso', 'Left Arm', 'Right Arm', 'Left Leg', 'Right Leg'}) do
+        local part = character:FindFirstChild(partName)
+        if part then parts[partName] = part end
+    end
+    
+    local keys = {}
+    for t in pairs(animationData) do table.insert(keys, t) end
+    table.sort(keys)
+    
+    local maxTime = keys[#keys]
+    local startTime = tick()
+    local isAnimating = true
+    
+    RS:BindToRenderStep("ButtonAnimLocal", 201, function()
+        if not isAnimating then
+            RS:UnbindFromRenderStep("ButtonAnimLocal")
+            return
+        end
+        
+        local elapsed = tick() - startTime
+        
+        local before, after
+        for i = 1, #keys - 1 do
+            if elapsed >= keys[i] and elapsed <= keys[i + 1] then
+                before = keys[i]
+                after = keys[i + 1]
+                break
+            end
+        end
+        
+        if before and after then
+            local cfA = animationData[before]
+            local cfB = animationData[after]
+            local alpha = (elapsed - before) / (after - before)
+            alpha = math.floor(alpha * 5) / 5
+            
+            for partName, part in pairs(parts) do
+                if cfA[partName] and cfB[partName] then
+                    part.CFrame = cfA[partName]:Lerp(cfB[partName], alpha)
+                end
+            end
+        else
+            if elapsed > maxTime then
+                isAnimating = false
+            end
+        end
+    end)
+end
+
+-- Conectar com RemoteEvent para ativar a animação
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local animEvent = ReplicatedStorage:WaitForChild("PlayAnimationEvent")
+
+animEvent.OnClientEvent:Connect(function()
+    playAnimation()
+end)
+]]
+    
+    return output
+end
+
+-- Exportar Animação para ServerScript (BOTÃO)
+local function exportAnimationButtonServer()
+    if not next(animationData) then return "" end
+    
+    local output = "-- Blender Animator Lite - SERVER SCRIPT (Botao)\n"
+    output = output .. "-- Coloque este script em ServerScriptService\n\n"
+    output = output .. "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n\n"
+    output = output .. "-- Criar RemoteEvent se não existir\n"
+    output = output .. "local animEvent = ReplicatedStorage:FindFirstChild('PlayAnimationEvent')\n"
+    output = output .. "if not animEvent then\n"
+    output = output .. "    animEvent = Instance.new('RemoteEvent')\n"
+    output = output .. "    animEvent.Name = 'PlayAnimationEvent'\n"
+    output = output .. "    animEvent.Parent = ReplicatedStorage\n"
+    output = output .. "end\n\n"
+    output = output .. "-- Configurar o botão\n"
+    output = output .. "local button = workspace:WaitForChild('AnimationButton') -- Mude para o caminho do seu botão\n\n"
+    output = output .. "local clickDetector = button:FindFirstChild('ClickDetector')\n"
+    output = output .. "if not clickDetector then\n"
+    output = output .. "    clickDetector = Instance.new('ClickDetector')\n"
+    output = output .. "    clickDetector.Parent = button\n"
+    output = output .. "end\n\n"
+    output = output .. "clickDetector.MouseClick:Connect(function(player)\n"
+    output = output .. "    -- Ativar animação para todos os jogadores\n"
+    output = output .. "    animEvent:FireAllClients()\n"
+    output = output .. "end)\n"
+    
+    return output
+end
+
+-- Exportar Animação para LocalScript (TOOL)
+local function exportAnimationToolLocal()
+    if not next(animationData) then return "" end
+    
+    local output = "-- Blender Animator Lite - LOCAL SCRIPT (Tool)\n"
+    output = output .. "-- Coloque este script dentro de uma Tool\n\n"
+    output = output .. "local tool = script.Parent\n"
+    output = output .. "local RS = game:GetService('RunService')\n"
+    output = output .. "local isAnimating = false\n\n"
+    output = output .. generateAnimationDataCode()
+    output = output .. [[
+
+local function playAnimation(character)
+    local parts = {}
+    for _, partName in ipairs({'Head', 'Torso', 'Left Arm', 'Right Arm', 'Left Leg', 'Right Leg'}) do
+        local part = character:FindFirstChild(partName)
+        if part then parts[partName] = part end
+    end
+    
+    local keys = {}
+    for t in pairs(animationData) do table.insert(keys, t) end
+    table.sort(keys)
+    
+    local maxTime = keys[#keys]
+    local startTime = tick()
+    isAnimating = true
+    
+    RS:BindToRenderStep("ToolAnim", 201, function()
+        if not isAnimating then
+            RS:UnbindFromRenderStep("ToolAnim")
+            return
+        end
+        
+        local elapsed = tick() - startTime
+        
+        local before, after
+        for i = 1, #keys - 1 do
+            if elapsed >= keys[i] and elapsed <= keys[i + 1] then
+                before = keys[i]
+                after = keys[i + 1]
+                break
+            end
+        end
+        
+        if before and after then
+            local cfA = animationData[before]
+            local cfB = animationData[after]
+            local alpha = (elapsed - before) / (after - before)
+            alpha = math.floor(alpha * 5) / 5
+            
+            for partName, part in pairs(parts) do
+                if cfA[partName] and cfB[partName] then
+                    part.CFrame = cfA[partName]:Lerp(cfB[partName], alpha)
+                end
+            end
+        else
+            if elapsed > maxTime then
+                isAnimating = false
+            end
+        end
+    end)
+end
+
+local function stopAnimation()
+    isAnimating = false
+    RS:UnbindFromRenderStep("ToolAnim")
+end
+
+tool.Equipped:Connect(function()
+    local character = tool.Parent
+    playAnimation(character)
+end)
+
+tool.Unequipped:Connect(function()
+    stopAnimation()
+end)
+]]
+    
+    return output
+end
+
+-- Exportar Animação para DUMMY (Loop Infinito)
+local function exportAnimationDummy()
+    if not next(animationData) then return "" end
+    
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    local output = "-- Blender Animator Lite - Exportacao DUMMY\n"
+    output = output .. "-- Coloque este script dentro do modelo Dummy\n\n"
+    output = output .. "local RS = game:GetService('RunService')\n"
+    output = output .. "local Dummy = script.Parent\n\n"
+    output = output .. generateAnimationDataCode()
+    output = output .. [[
+
+local parts = {}
+for _, partName in ipairs({'Head', 'Torso', 'Left Arm', 'Right Arm', 'Left Leg', 'Right Leg'}) do
+    local part = Dummy:FindFirstChild(partName)
+    if part then parts[partName] = part end
+end
+
+local keys = {}
+for t in pairs(animationData) do table.insert(keys, t) end
+table.sort(keys)
+
+while true do
+    for i = 1, #keys - 1 do
+        local t1, t2 = keys[i], keys[i + 1]
+        local a1, a2 = animationData[t1], animationData[t2]
+        
+        for s = 0, 1, 0.2 do
+            for partName, part in pairs(parts) do
+                if a1[partName] and a2[partName] then
+                    part.CFrame = a1[partName]:Lerp(a2[partName], s)
+                end
+            end
+            task.wait()
+        end
+    end
+end
+]]
+    
+    return output
+end
+
+-- ========================================
+-- GUI DO BLENDER ANIMATOR LITE
+-- ========================================
+
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
--- =================== GUI ===================
-local gui = Instance.new("ScreenGui")
-gui.Name = "BlenderToolBoxGUI"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 999
-gui.Parent = CoreGui
+-- Criar ScreenGui
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BlenderAnimatorLite"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
 
--- =================== Frame principal ===================
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 450, 0, 550)
-mainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
-mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = gui
+-- Botão Toggle (Ícone flutuante)
+local toggleButton = Instance.new("ImageButton")
+toggleButton.Name = "ToggleButton"
+toggleButton.Size = UDim2.new(0, 60, 0, 60)
+toggleButton.Position = UDim2.new(0, 20, 0.5, -30)
+toggleButton.BackgroundTransparency = 1
+toggleButton.BorderSizePixel = 0
+toggleButton.Image = "rbxassetid://128572885618611"
+toggleButton.ScaleType = Enum.ScaleType.Fit
+toggleButton.Parent = screenGui
+
+-- Tornar o botão toggle arrastável
+local draggingToggleBtn = false
+local dragStartToggleBtn = nil
+local startPosToggleBtn = nil
+
+toggleButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingToggleBtn = true
+        dragStartToggleBtn = input.Position
+        startPosToggleBtn = toggleButton.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                draggingToggleBtn = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingToggleBtn and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStartToggleBtn
+        local newPosition = UDim2.new(
+            startPosToggleBtn.X.Scale,
+            startPosToggleBtn.X.Offset + delta.X,
+            startPosToggleBtn.Y.Scale,
+            startPosToggleBtn.Y.Offset + delta.Y
+        )
+        toggleButton.Position = newPosition
+    end
+end)
+
+-- Container de Notificações
+local notificationContainer = Instance.new("Frame")
+notificationContainer.Name = "NotificationContainer"
+notificationContainer.Size = UDim2.new(0, 300, 1, 0)
+notificationContainer.Position = UDim2.new(1, -320, 0, 20)
+notificationContainer.BackgroundTransparency = 1
+notificationContainer.Parent = screenGui
+
+local notificationLayout = Instance.new("UIListLayout")
+notificationLayout.SortOrder = Enum.SortOrder.LayoutOrder
+notificationLayout.Padding = UDim.new(0, 10)
+notificationLayout.Parent = notificationContainer
+
+-- Janela Principal
+local mainWindow = Instance.new("Frame")
+mainWindow.Name = "MainWindow"
+mainWindow.Size = UDim2.new(0, 600, 0, 480)
+mainWindow.Position = UDim2.new(0.5, -300, 0.5, -240)
+mainWindow.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+mainWindow.BorderSizePixel = 0
+mainWindow.Visible = false
+mainWindow.Parent = screenGui
 
 local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = mainFrame
+mainCorner.CornerRadius = UDim.new(0, 12)
+mainCorner.Parent = mainWindow
 
--- =================== Título ===================
-local titleFrame = Instance.new("Frame")
-titleFrame.Name = "TitleFrame"
-titleFrame.Size = UDim2.new(1, 0, 0, 40)
-titleFrame.Position = UDim2.new(0, 0, 0, 0)
-titleFrame.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-titleFrame.BorderSizePixel = 0
-titleFrame.Parent = mainFrame
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(51, 51, 51)
+mainStroke.Thickness = 2
+mainStroke.Parent = mainWindow
+
+-- Barra de Título (Laranja)
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 45)
+titleBar.BackgroundColor3 = Color3.fromRGB(255, 140, 0)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainWindow
+
+local titleGradient = Instance.new("UIGradient")
+titleGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 140, 0)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 102, 0))
+}
+titleGradient.Rotation = 135
+titleGradient.Parent = titleBar
 
 local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 10)
-titleCorner.Parent = titleFrame
+titleCorner.CornerRadius = UDim.new(0, 12)
+titleCorner.Parent = titleBar
 
+-- Tornar a janela arrastável pela barra de título
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPos = nil
+
+local function updateDrag(input)
+    local delta = input.Position - dragStart
+    local newPosition = UDim2.new(
+        startPos.X.Scale,
+        startPos.X.Offset + delta.X,
+        startPos.Y.Scale,
+        startPos.Y.Offset + delta.Y
+    )
+    mainWindow.Position = newPosition
+end
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainWindow.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        updateDrag(input)
+    end
+end)
+
+-- Título (Texto Branco)
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -80, 1, 0)
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.Name = "TitleLabel"
+titleLabel.Size = UDim2.new(1, -120, 1, 0)
+titleLabel.Position = UDim2.new(0, 15, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Blender ToolBox"
-titleLabel.TextColor3 = Color3.fromRGB(255,255,255)
-titleLabel.Font = Enum.Font.SourceSansBold
-titleLabel.TextSize = 22
+titleLabel.Text = "Blender Animator Lite"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 16
+titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleFrame
+titleLabel.Parent = titleBar
 
--- =================== Botões minimizar e fechar ===================
+-- Botão Minimizar (-)
 local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Size = UDim2.new(0, 35, 0, 35)
-minimizeBtn.Position = UDim2.new(1, -75, 0, 2)
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(200,200,200)
+minimizeBtn.Name = "MinimizeBtn"
+minimizeBtn.Size = UDim2.new(0, 40, 0, 35)
+minimizeBtn.Position = UDim2.new(1, -95, 0.5, -17.5)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
 minimizeBtn.Text = "-"
-minimizeBtn.Font = Enum.Font.SourceSansBold
-minimizeBtn.TextSize = 24
+minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minimizeBtn.TextSize = 20
+minimizeBtn.Font = Enum.Font.GothamBold
 minimizeBtn.BorderSizePixel = 0
-minimizeBtn.Parent = titleFrame
+minimizeBtn.Parent = titleBar
 
-local minCorner = Instance.new("UICorner")
-minCorner.CornerRadius = UDim.new(0, 6)
-minCorner.Parent = minimizeBtn
+local minimizeCorner = Instance.new("UICorner")
+minimizeCorner.CornerRadius = UDim.new(0, 6)
+minimizeCorner.Parent = minimizeBtn
 
+-- Botão Fechar (X)
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 35, 0, 35)
-closeBtn.Position = UDim2.new(1, -35, 0, 2)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+closeBtn.Name = "CloseBtn"
+closeBtn.Size = UDim2.new(0, 40, 0, 35)
+closeBtn.Position = UDim2.new(1, -50, 0.5, -17.5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 68, 68)
 closeBtn.Text = "X"
-closeBtn.Font = Enum.Font.SourceSansBold
-closeBtn.TextSize = 20
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 18
+closeBtn.Font = Enum.Font.GothamBold
 closeBtn.BorderSizePixel = 0
-closeBtn.Parent = titleFrame
+closeBtn.Parent = titleBar
 
 local closeCorner = Instance.new("UICorner")
 closeCorner.CornerRadius = UDim.new(0, 6)
 closeCorner.Parent = closeBtn
 
--- =================== Conteúdo interno ===================
-local contentFrame = Instance.new("Frame")
-contentFrame.Size = UDim2.new(1, 0, 1, -50)
-contentFrame.Position = UDim2.new(0, 0, 0, 50)
-contentFrame.BackgroundTransparency = 1
-contentFrame.Parent = mainFrame
+-- Container de Conteúdo
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Size = UDim2.new(1, -40, 1, -65)
+content.Position = UDim2.new(0, 20, 0, 55)
+content.BackgroundTransparency = 1
+content.Parent = mainWindow
 
--- =================== Categorias ===================
-local categoryFrame = Instance.new("Frame")
-categoryFrame.Size = UDim2.new(1, -20, 0, 35)
-categoryFrame.Position = UDim2.new(0, 10, 0, 5)
-categoryFrame.BackgroundTransparency = 1
-categoryFrame.Parent = contentFrame
-
-local categoryLayout = Instance.new("UIListLayout")
-categoryLayout.FillDirection = Enum.FillDirection.Horizontal
-categoryLayout.Padding = UDim.new(0, 5)
-categoryLayout.Parent = categoryFrame
-
-local categories = {
-    {name = "Tudo", keyword = ""},
-    {name = "Armas", keyword = "weapon"},
-    {name = "Veículos", keyword = "vehicle"},
-    {name = "Móveis", keyword = "furniture"},
-    {name = "Natureza", keyword = "nature"}
-}
-
-local currentCategory = ""
-
--- =================== Barra de pesquisa ===================
-local searchBox = Instance.new("TextBox")
-searchBox.Size = UDim2.new(1, -20, 0, 35)
-searchBox.Position = UDim2.new(0, 10, 0, 45)
-searchBox.BackgroundColor3 = Color3.fromRGB(50,50,50)
-searchBox.TextColor3 = Color3.fromRGB(255,255,255)
-searchBox.PlaceholderText = "🔍 Pesquisar na Toolbox do Roblox..."
-searchBox.PlaceholderColor3 = Color3.fromRGB(150,150,150)
-searchBox.Font = Enum.Font.SourceSans
-searchBox.TextSize = 16
-searchBox.ClearTextOnFocus = false
-searchBox.BorderSizePixel = 0
-searchBox.Parent = contentFrame
-
-local searchCorner = Instance.new("UICorner")
-searchCorner.CornerRadius = UDim.new(0, 6)
-searchCorner.Parent = searchBox
-
--- Botão de buscar
-local searchBtn = Instance.new("TextButton")
-searchBtn.Size = UDim2.new(0, 80, 0, 35)
-searchBtn.Position = UDim2.new(1, -100, 0, 45)
-searchBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-searchBtn.Text = "Buscar"
-searchBtn.TextColor3 = Color3.fromRGB(255,255,255)
-searchBtn.Font = Enum.Font.SourceSansBold
-searchBtn.TextSize = 16
-searchBtn.BorderSizePixel = 0
-searchBtn.Parent = contentFrame
-
-local searchBtnCorner = Instance.new("UICorner")
-searchBtnCorner.CornerRadius = UDim.new(0, 6)
-searchBtnCorner.Parent = searchBtn
-
--- =================== Status Label ===================
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -20, 0, 20)
-statusLabel.Position = UDim2.new(0, 10, 0, 85)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "💡 Digite algo e clique em Buscar"
-statusLabel.TextColor3 = Color3.fromRGB(150,150,150)
-statusLabel.Font = Enum.Font.SourceSans
-statusLabel.TextSize = 14
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = contentFrame
-
--- =================== ScrollFrame ===================
-local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -20, 1, -115)
-scrollFrame.Position = UDim2.new(0, 10, 0, 110)
-scrollFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-scrollFrame.BorderSizePixel = 0
-scrollFrame.ScrollBarThickness = 8
-scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(255, 165, 0)
-scrollFrame.Parent = contentFrame
-
-local scrollCorner = Instance.new("UICorner")
-scrollCorner.CornerRadius = UDim.new(0, 6)
-scrollCorner.Parent = scrollFrame
-
-local gridLayout = Instance.new("UIGridLayout")
-gridLayout.CellSize = UDim2.new(0, 130, 0, 160)
-gridLayout.CellPadding = UDim2.new(0, 5, 0, 5)
-gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
-gridLayout.Parent = scrollFrame
-
--- =================== Toggle ===================
-local toggleBtn = Instance.new("ImageButton")
-toggleBtn.Size = UDim2.new(0, 60, 0, 60)
-toggleBtn.Position = UDim2.new(0, 10, 0, 10)
-toggleBtn.BackgroundTransparency = 1
-toggleBtn.Image = "rbxassetid://128572885618611"
-toggleBtn.Parent = gui
-
-local clickSound = Instance.new("Sound")
-clickSound.SoundId = "rbxassetid://140691817123595"
-clickSound.Volume = 1
-clickSound.Parent = toggleBtn
-
--- =================== Função de arrastar ===================
-local function makeDraggable(guiObject, dragHandle)
-    local dragging = false
-    local dragInput
-    local dragStart
-    local startPos
-
-    local function update(input)
-        if dragging then
-            local delta = input.Position - dragStart
-            guiObject.Position = UDim2.new(
-                startPos.X.Scale, 
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale, 
-                startPos.Y.Offset + delta.Y
-            )
-        end
-    end
-
-    dragHandle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
-           input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = guiObject.Position
-
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-
-    dragHandle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or 
-           input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput then
-            update(input)
-        end
-    end)
+-- Função para criar botão
+local function createButton(name, text, bgColor, position, size, parent)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Size = size
+    btn.Position = position
+    btn.BackgroundColor3 = bgColor
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 14
+    btn.Font = Enum.Font.GothamBold
+    btn.BorderSizePixel = 0
+    btn.Parent = parent
     
-    return function() return dragging end
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = btn
+    
+    return btn
 end
 
--- =================== SISTEMA DE BUSCA MELHORADO ===================
+-- Primeira Linha de Botões
+local row1 = Instance.new("Frame")
+row1.Name = "Row1"
+row1.Size = UDim2.new(1, 0, 0, 50)
+row1.Position = UDim2.new(0, 0, 0, 0)
+row1.BackgroundTransparency = 1
+row1.Parent = content
 
--- Função para limpar resultados
-local function clearResults()
-    for _, child in ipairs(scrollFrame:GetChildren()) do
-        if child:IsA("Frame") then
-            child:Destroy()
-        end
+local row1Layout = Instance.new("UIListLayout")
+row1Layout.FillDirection = Enum.FillDirection.Horizontal
+row1Layout.Padding = UDim.new(0, 10)
+row1Layout.Parent = row1
+
+local btnKEY = createButton("KEY", "KEY", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 70, 0, 50), row1)
+local btnPLAY = createButton("PLAY", "PLAY", Color3.fromRGB(34, 197, 94), UDim2.new(0, 0, 0, 0), UDim2.new(0, 80, 0, 50), row1)
+local btnSTOP = createButton("STOP", "STOP", Color3.fromRGB(239, 68, 68), UDim2.new(0, 0, 0, 0), UDim2.new(0, 70, 0, 50), row1)
+local btnIcon1 = createButton("Icon1", "ANIM", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row1)
+local btnLoop = createButton("Loop", "LOOP", Color3.fromRGB(138, 43, 226), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row1)
+local btnEXPORT = createButton("EXPORT", "EXPORTAR", Color3.fromRGB(59, 130, 246), UDim2.new(0, 0, 0, 0), UDim2.new(0, 150, 0, 50), row1)
+
+-- Segunda Linha de Botões
+local row2 = Instance.new("Frame")
+row2.Name = "Row2"
+row2.Size = UDim2.new(1, 0, 0, 50)
+row2.Position = UDim2.new(0, 0, 0, 65)
+row2.BackgroundTransparency = 1
+row2.Parent = content
+
+local row2Layout = Instance.new("UIListLayout")
+row2Layout.FillDirection = Enum.FillDirection.Horizontal
+row2Layout.Padding = UDim.new(0, 10)
+row2Layout.Parent = row2
+
+local btn1 = createButton("Btn1", "OPEN", Color3.fromRGB(59, 130, 246), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+local btn2 = createButton("Btn2", "SAVE", Color3.fromRGB(59, 130, 246), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+local btn3 = createButton("Btn3", "RESET", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+local btn4 = createButton("Btn4", "START", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+local btnVEL = createButton("VEL", "VEL-", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 60, 0, 50), row2)
+local btnMinus = createButton("Minus", "-", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 40, 0, 50), row2)
+local btn120 = createButton("120x", string.format("%.1fx", currentSpeed), Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 60, 0, 50), row2)
+local btnPlus = createButton("Plus", "+", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 40, 0, 50), row2)
+local btnRET = createButton("RET", "RET", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+local btn05 = createButton("05", "0.5", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 50), row2)
+
+-- Seção de Modo (Botão/Tool/Dummy)
+local toggleSection = Instance.new("Frame")
+toggleSection.Name = "ToggleSection"
+toggleSection.Size = UDim2.new(1, 0, 0, 80)
+toggleSection.Position = UDim2.new(0, 0, 0, 130)
+toggleSection.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+toggleSection.BorderSizePixel = 0
+toggleSection.Parent = content
+
+local toggleSectionCorner = Instance.new("UICorner")
+toggleSectionCorner.CornerRadius = UDim.new(0, 8)
+toggleSectionCorner.Parent = toggleSection
+
+local toggleLabel = Instance.new("TextLabel")
+toggleLabel.Size = UDim2.new(1, -20, 0, 20)
+toggleLabel.Position = UDim2.new(0, 10, 0, 8)
+toggleLabel.BackgroundTransparency = 1
+toggleLabel.Text = "TIPO DE EXPORTACAO:"
+toggleLabel.TextColor3 = Color3.fromRGB(136, 136, 136)
+toggleLabel.TextSize = 13
+toggleLabel.Font = Enum.Font.GothamBold
+toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+toggleLabel.Parent = toggleSection
+
+local toggleContainer = Instance.new("Frame")
+toggleContainer.Size = UDim2.new(1, -20, 0, 40)
+toggleContainer.Position = UDim2.new(0, 10, 0, 32)
+toggleContainer.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+toggleContainer.BorderSizePixel = 0
+toggleContainer.Parent = toggleSection
+
+local toggleContainerCorner = Instance.new("UICorner")
+toggleContainerCorner.CornerRadius = UDim.new(0, 6)
+toggleContainerCorner.Parent = toggleContainer
+
+local toggleImage = Instance.new("TextLabel")
+toggleImage.Size = UDim2.new(0, 40, 0, 40)
+toggleImage.Position = UDim2.new(0, 5, 0.5, -20)
+toggleImage.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+toggleImage.Text = "B"
+toggleImage.TextSize = 24
+toggleImage.Font = Enum.Font.GothamBold
+toggleImage.BorderSizePixel = 0
+toggleImage.Parent = toggleContainer
+
+local toggleImageCorner = Instance.new("UICorner")
+toggleImageCorner.CornerRadius = UDim.new(0, 6)
+toggleImageCorner.Parent = toggleImage
+
+local toggleText = Instance.new("TextLabel")
+toggleText.Size = UDim2.new(0, 200, 0, 40)
+toggleText.Position = UDim2.new(0, 55, 0, 0)
+toggleText.BackgroundTransparency = 1
+toggleText.Text = "BOTAO"
+toggleText.TextColor3 = Color3.fromRGB(204, 204, 204)
+toggleText.TextSize = 14
+toggleText.Font = Enum.Font.Gotham
+toggleText.TextXAlignment = Enum.TextXAlignment.Left
+toggleText.Parent = toggleContainer
+
+-- Botão de Mudança de Modo
+local btnChangeMode = Instance.new("TextButton")
+btnChangeMode.Name = "ChangeModeBtn"
+btnChangeMode.Size = UDim2.new(0, 90, 0, 30)
+btnChangeMode.Position = UDim2.new(1, -100, 0.5, -15)
+btnChangeMode.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+btnChangeMode.Text = "MUDAR"
+btnChangeMode.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnChangeMode.TextSize = 12
+btnChangeMode.Font = Enum.Font.GothamBold
+btnChangeMode.BorderSizePixel = 0
+btnChangeMode.Parent = toggleContainer
+
+local changeModeCorner = Instance.new("UICorner")
+changeModeCorner.CornerRadius = UDim.new(0, 6)
+changeModeCorner.Parent = btnChangeMode
+
+-- Terceira Linha de Botões
+local row3 = Instance.new("Frame")
+row3.Name = "Row3"
+row3.Size = UDim2.new(1, 0, 0, 50)
+row3.Position = UDim2.new(0, 0, 0, 225)
+row3.BackgroundTransparency = 1
+row3.Parent = content
+
+local row3Layout = Instance.new("UIListLayout")
+row3Layout.FillDirection = Enum.FillDirection.Horizontal
+row3Layout.Padding = UDim.new(0, 10)
+row3Layout.Parent = row3
+
+local btnEASING = createButton("EASING", "EASING", Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(1, -210, 0, 50), row3)
+local btnLinear = createButton("Linear", easingStyle, Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 95, 0, 50), row3)
+local btnOut = createButton("Out", easingDirection, Color3.fromRGB(58, 58, 58), UDim2.new(0, 0, 0, 0), UDim2.new(0, 95, 0, 50), row3)
+
+-- Timeline Container
+local timelineContainer = Instance.new("Frame")
+timelineContainer.Name = "TimelineContainer"
+timelineContainer.Size = UDim2.new(1, 0, 0, 90)
+timelineContainer.Position = UDim2.new(0, 0, 0, 290)
+timelineContainer.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+timelineContainer.BorderSizePixel = 0
+timelineContainer.Parent = content
+
+local timelineCorner = Instance.new("UICorner")
+timelineCorner.CornerRadius = UDim.new(0, 8)
+timelineCorner.Parent = timelineContainer
+
+local timelineLabel = Instance.new("TextLabel")
+timelineLabel.Size = UDim2.new(1, -20, 0, 20)
+timelineLabel.Position = UDim2.new(0, 10, 0, 8)
+timelineLabel.BackgroundTransparency = 1
+timelineLabel.Text = "TIMELINE - Tempo: 0.0s"
+timelineLabel.TextColor3 = Color3.fromRGB(136, 136, 136)
+timelineLabel.TextSize = 13
+timelineLabel.Font = Enum.Font.GothamBold
+timelineLabel.TextXAlignment = Enum.TextXAlignment.Left
+timelineLabel.Parent = timelineContainer
+
+local timeline = Instance.new("Frame")
+timeline.Name = "Timeline"
+timeline.Size = UDim2.new(1, -20, 0, 40)
+timeline.Position = UDim2.new(0, 10, 0, 35)
+timeline.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+timeline.BorderSizePixel = 0
+timeline.Parent = timelineContainer
+
+_G.BlenderTimeline = timeline
+
+local timelineLineCorner = Instance.new("UICorner")
+timelineLineCorner.CornerRadius = UDim.new(0, 6)
+timelineLineCorner.Parent = timeline
+
+-- Handle da Timeline (Único e Arrastável)
+local timelineHandle = Instance.new("TextButton")
+timelineHandle.Name = "TimelineHandle"
+timelineHandle.Size = UDim2.new(0, 30, 0, 50)
+timelineHandle.Position = UDim2.new(0, 0, 0.5, -25)
+timelineHandle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+timelineHandle.BorderSizePixel = 0
+timelineHandle.Text = ""
+timelineHandle.ZIndex = 10
+timelineHandle.Parent = timeline
+
+_G.BlenderTimelineHandle = timelineHandle
+
+local timelineHandleCorner = Instance.new("UICorner")
+timelineHandleCorner.CornerRadius = UDim.new(0, 6)
+timelineHandleCorner.Parent = timelineHandle
+
+-- Função para atualizar markers de keyframe
+local function updateKeyframeMarkers()
+    for _, marker in pairs(keyframeMarkers) do
+        marker:Destroy()
+    end
+    keyframeMarkers = {}
+    
+    local keys = {}
+    for t in pairs(animationData) do 
+        table.insert(keys, t) 
+    end
+    table.sort(keys)
+    
+    if #keys == 0 then return end
+    
+    local maxTime = keys[#keys]
+    local timelineWidth = timeline.AbsoluteSize.X
+    
+    for _, time in ipairs(keys) do
+        local progress = time / maxTime
+        local posX = progress * timelineWidth
+        
+        local marker = Instance.new("Frame")
+        marker.Name = "KeyframeMarker_" .. time
+        marker.Size = UDim2.new(0, 8, 0, 50)
+        marker.Position = UDim2.new(0, posX - 4, 0.5, -25)
+        marker.BackgroundColor3 = Color3.fromRGB(255, 215, 0)
+        marker.BorderSizePixel = 0
+        marker.ZIndex = 5
+        marker.Parent = timeline
+        
+        local markerCorner = Instance.new("UICorner")
+        markerCorner.CornerRadius = UDim.new(0, 4)
+        markerCorner.Parent = marker
+        
+        local timeLabel = Instance.new("TextLabel")
+        timeLabel.Size = UDim2.new(0, 40, 0, 15)
+        timeLabel.Position = UDim2.new(0.5, -20, 1, 2)
+        timeLabel.BackgroundTransparency = 1
+        timeLabel.Text = string.format("%.1f", time)
+        timeLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+        timeLabel.TextSize = 10
+        timeLabel.Font = Enum.Font.GothamBold
+        timeLabel.ZIndex = 6
+        timeLabel.Parent = marker
+        
+        table.insert(keyframeMarkers, marker)
     end
 end
 
--- Função para criar card de modelo
-local function createModelCard(assetData)
-    local card = Instance.new("Frame")
-    card.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    card.BorderSizePixel = 0
-    card.Parent = scrollFrame
-    
-    local cardCorner = Instance.new("UICorner")
-    cardCorner.CornerRadius = UDim.new(0, 8)
-    cardCorner.Parent = card
-    
-    -- Thumbnail
-    local thumbnail = Instance.new("ImageLabel")
-    thumbnail.Size = UDim2.new(1, -10, 0, 100)
-    thumbnail.Position = UDim2.new(0, 5, 0, 5)
-    thumbnail.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    thumbnail.BorderSizePixel = 0
-    thumbnail.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
-    thumbnail.Parent = card
-    
-    local thumbCorner = Instance.new("UICorner")
-    thumbCorner.CornerRadius = UDim.new(0, 6)
-    thumbCorner.Parent = thumbnail
-    
-    -- Tentar carregar thumbnail de múltiplas fontes
-    spawn(function()
-        -- Método 1: API de thumbnails
-        local success1 = pcall(function()
-            local thumbUrl = string.format(
-                "https://thumbnails.roblox.com/v1/assets?assetIds=%d&size=150x150&format=Png",
-                assetData.id
-            )
-            local response = game:HttpGet(thumbUrl)
-            local data = HttpService:JSONDecode(response)
-            if data and data.data and data.data[1] and data.data[1].imageUrl then
-                thumbnail.Image = data.data[1].imageUrl
+-- Sistema de arrastar a timeline
+local draggingTimeline = false
+local timelineDragStart = nil
+local timelineStartPos = nil
+
+timelineHandle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingTimeline = true
+        timelineDragStart = input.Position
+        timelineStartPos = timelineHandle.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                draggingTimeline = false
             end
         end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingTimeline and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - timelineDragStart
+        local timelineWidth = timeline.AbsoluteSize.X
+        local newOffsetX = timelineStartPos.X.Offset + delta.X
         
-        -- Método 2: AssetDelivery (fallback)
-        if not success1 then
-            pcall(function()
-                thumbnail.Image = string.format("https://assetdelivery.roblox.com/v1/asset/?id=%d", assetData.id)
-            end)
+        local minX = 0
+        local maxX = timelineWidth - timelineHandle.AbsoluteSize.X
+        newOffsetX = math.clamp(newOffsetX, minX, maxX)
+        
+        timelineHandle.Position = UDim2.new(0, newOffsetX, 0.5, -25)
+        
+        local progress = newOffsetX / (maxX > 0 and maxX or 1)
+        
+        local keys = {}
+        for t in pairs(animationData) do 
+            table.insert(keys, t) 
         end
+        table.sort(keys)
         
-        -- Método 3: Direct AssetId (último fallback)
-        if thumbnail.Image == "rbxasset://textures/ui/GuiImagePlaceholder.png" then
-            pcall(function()
-                thumbnail.Image = string.format("rbxassetid://%d", assetData.id)
-            end)
-        end
-    end)
+        local maxTime = #keys > 0 and keys[#keys] or 10
+        timelineTime = progress * maxTime
+        timelineLabel.Text = string.format("TIMELINE - Tempo: %.1fs", timelineTime)
+    end
+end)
+
+-- Texto de Ajuda
+local helpText = Instance.new("TextLabel")
+helpText.Size = UDim2.new(1, 0, 0, 20)
+helpText.Position = UDim2.new(0, 0, 1, -20)
+helpText.BackgroundTransparency = 1
+helpText.Text = "KEY: adicionar keyframe | PLAY: reproduzir | STOP: parar | LOOP: repetir | EXPORTAR: copiar codigo"
+helpText.TextColor3 = Color3.fromRGB(102, 102, 102)
+helpText.TextSize = 12
+helpText.Font = Enum.Font.Gotham
+helpText.Parent = content
+
+-- ========================================
+-- GUI DE EXPORTAÇÃO
+-- ========================================
+
+local function createExportWindow()
+    local exportWindow = Instance.new("Frame")
+    exportWindow.Name = "ExportWindow"
+    exportWindow.Size = UDim2.new(0, 620, 0, 400)
+    exportWindow.Position = UDim2.new(0.5, -310, 0.5, -200)
+    exportWindow.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    exportWindow.BorderSizePixel = 0
+    exportWindow.Visible = true
+    exportWindow.ZIndex = 100
+    exportWindow.Parent = screenGui
     
-    -- Nome do modelo
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1, -10, 0, 35)
-    nameLabel.Position = UDim2.new(0, 5, 0, 110)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = assetData.name or "Modelo sem nome"
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.Font = Enum.Font.SourceSans
-    nameLabel.TextSize = 13
-    nameLabel.TextWrapped = true
-    nameLabel.TextYAlignment = Enum.TextYAlignment.Top
-    nameLabel.Parent = card
+    local exportCorner = Instance.new("UICorner")
+    exportCorner.CornerRadius = UDim.new(0, 10)
+    exportCorner.Parent = exportWindow
     
-    -- Botão de inserir
-    local insertBtn = Instance.new("TextButton")
-    insertBtn.Size = UDim2.new(1, -10, 0, 25)
-    insertBtn.Position = UDim2.new(0, 5, 1, -30)
-    insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    insertBtn.Text = "Inserir"
-    insertBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    insertBtn.Font = Enum.Font.SourceSansBold
-    insertBtn.TextSize = 14
-    insertBtn.BorderSizePixel = 0
-    insertBtn.Parent = card
+    local exportTitleBar = Instance.new("Frame")
+    exportTitleBar.Name = "TitleBar"
+    exportTitleBar.Size = UDim2.new(1, 0, 0, 50)
+    exportTitleBar.BackgroundColor3 = Color3.fromRGB(255, 140, 0)
+    exportTitleBar.BorderSizePixel = 0
+    exportTitleBar.ZIndex = 101
+    exportTitleBar.Parent = exportWindow
     
-    local insertCorner = Instance.new("UICorner")
-    insertCorner.CornerRadius = UDim.new(0, 5)
-    insertCorner.Parent = insertBtn
+    local exportTitleCorner = Instance.new("UICorner")
+    exportTitleCorner.CornerRadius = UDim.new(0, 10)
+    exportTitleCorner.Parent = exportTitleBar
     
-    -- Hover effect
-    insertBtn.MouseEnter:Connect(function()
-        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 100)
-    end)
+    local exportTitle = Instance.new("TextLabel")
+    exportTitle.Size = UDim2.new(1, -100, 1, 0)
+    exportTitle.Position = UDim2.new(0, 15, 0, 0)
+    exportTitle.BackgroundTransparency = 1
+    exportTitle.Text = "CODIGO DE ANIMACAO (" .. string.upper(currentMode) .. ")"
+    exportTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    exportTitle.TextSize = 16
+    exportTitle.Font = Enum.Font.GothamBold
+    exportTitle.TextXAlignment = Enum.TextXAlignment.Left
+    exportTitle.ZIndex = 102
+    exportTitle.Parent = exportTitleBar
     
-    insertBtn.MouseLeave:Connect(function()
-        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    end)
+    local exportCloseBtn = Instance.new("TextButton")
+    exportCloseBtn.Name = "CloseBtn"
+    exportCloseBtn.Size = UDim2.new(0, 40, 0, 40)
+    exportCloseBtn.Position = UDim2.new(1, -50, 0.5, -20)
+    exportCloseBtn.BackgroundColor3 = Color3.fromRGB(255, 68, 68)
+    exportCloseBtn.Text = "X"
+    exportCloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    exportCloseBtn.TextSize = 18
+    exportCloseBtn.Font = Enum.Font.GothamBold
+    exportCloseBtn.BorderSizePixel = 0
+    exportCloseBtn.ZIndex = 102
+    exportCloseBtn.Parent = exportTitleBar
     
-    -- Inserir modelo
-    insertBtn.MouseButton1Click:Connect(function()
-        insertBtn.Text = "Inserindo..."
-        insertBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    local exportCloseBtnCorner = Instance.new("UICorner")
+    exportCloseBtnCorner.CornerRadius = UDim.new(0, 8)
+    exportCloseBtnCorner.Parent = exportCloseBtn
+    
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name = "ScrollFrame"
+    scrollFrame.Size = UDim2.new(1, -30, 1, -120)
+    scrollFrame.Position = UDim2.new(0, 15, 0, 65)
+    scrollFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 8
+    scrollFrame.ZIndex = 101
+    scrollFrame.Parent = exportWindow
+    
+    local scrollCorner = Instance.new("UICorner")
+    scrollCorner.CornerRadius = UDim.new(0, 8)
+    scrollCorner.Parent = scrollFrame
+    
+    local codeText = Instance.new("TextLabel")
+    codeText.Name = "CodeText"
+    codeText.Size = UDim2.new(1, -20, 1, 0)
+    codeText.Position = UDim2.new(0, 10, 0, 10)
+    codeText.BackgroundTransparency = 1
+    codeText.Text = ""
+    codeText.TextColor3 = Color3.fromRGB(220, 220, 220)
+    codeText.TextSize = 13
+    codeText.Font = Enum.Font.Code
+    codeText.TextXAlignment = Enum.TextXAlignment.Left
+    codeText.TextYAlignment = Enum.TextYAlignment.Top
+    codeText.TextWrapped = true
+    codeText.ZIndex = 102
+    codeText.Parent = scrollFrame
+    
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Name = "ButtonContainer"
+    buttonContainer.Size = UDim2.new(1, -30, 0, 40)
+    buttonContainer.Position = UDim2.new(0, 15, 1, -50)
+    buttonContainer.BackgroundTransparency = 1
+    buttonContainer.ZIndex = 101
+    buttonContainer.Parent = exportWindow
+    
+    local function updateCodeDisplay(scriptType)
+        local code = ""
         
-        spawn(function()
-            local success, result = pcall(function()
-                local model = InsertService:LoadAsset(assetData.id)
-                local item = model:GetChildren()[1]
-                
-                if item then
-                    item.Parent = workspace
-                    
-                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                        local hrp = player.Character.HumanoidRootPart
-                        
-                        if item:IsA("Model") and item.PrimaryPart then
-                            item:SetPrimaryPartCFrame(hrp.CFrame * CFrame.new(0, 0, -5))
-                        elseif item:IsA("BasePart") then
-                            item.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
-                        elseif item:IsA("Model") then
-                            item:MoveTo(hrp.Position + (hrp.CFrame.LookVector * 5))
-                        end
-                    end
-                end
-                
-                model:Destroy()
-                return true
-            end)
-            
-            wait(0.3)
-            
-            if success then
-                insertBtn.Text = "✓ Inserido"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
-                wait(1)
-                insertBtn.Text = "Inserir"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+        if currentMode == "Botao" then
+            if scriptType == "LocalScript" then
+                code = exportAnimationButtonLocal()
+                exportTitle.Text = "CODIGO DE ANIMACAO (BOTAO - LocalScript)"
             else
-                insertBtn.Text = "✗ Erro"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-                warn("Erro ao inserir:", result)
-                wait(1)
-                insertBtn.Text = "Inserir"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+                code = exportAnimationButtonServer()
+                exportTitle.Text = "CODIGO DE ANIMACAO (BOTAO - ServerScript)"
             end
-        end)
-    end)
-end
-
--- Função MELHORADA para buscar na API do Roblox com múltiplas tentativas
-local function searchToolbox(keyword)
-    clearResults()
-    statusLabel.Text = "🔄 Buscando modelos..."
-    
-    local searchTerm = keyword
-    if searchTerm == "" then
-        searchTerm = "model"
+        elseif currentMode == "Tool" then
+            code = exportAnimationToolLocal()
+            exportTitle.Text = "CODIGO DE ANIMACAO (TOOL - LocalScript)"
+        elseif currentMode == "Dummy" then
+            code = exportAnimationDummy()
+            exportTitle.Text = "CODIGO DE ANIMACAO (DUMMY)"
+        end
+        
+        codeText.Text = code
+        
+        local textBounds = game:GetService("TextService"):GetTextSize(
+            code,
+            codeText.TextSize,
+            codeText.Font,
+            Vector2.new(scrollFrame.AbsoluteSize.X - 30, math.huge)
+        )
+        codeText.Size = UDim2.new(1, -20, 0, textBounds.Y + 20)
+        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, textBounds.Y + 40)
+        
+        return code
     end
     
-    spawn(function()
-        local allModels = {}
-        local foundCount = 0
+    if currentMode == "Botao" then
+        local btnLocalScript = Instance.new("TextButton")
+        btnLocalScript.Name = "LocalScriptBtn"
+        btnLocalScript.Size = UDim2.new(0.48, 0, 1, 0)
+        btnLocalScript.Position = UDim2.new(0, 0, 0, 0)
+        btnLocalScript.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+        btnLocalScript.Text = "LocalScript"
+        btnLocalScript.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btnLocalScript.TextSize = 14
+        btnLocalScript.Font = Enum.Font.GothamBold
+        btnLocalScript.BorderSizePixel = 0
+        btnLocalScript.ZIndex = 102
+        btnLocalScript.Parent = buttonContainer
         
-        -- MÉTODO 1: API de Catálogo (Primária)
-        local success1, response1 = pcall(function()
-            local apiUrl = string.format(
-                "https://catalog.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120&sortType=Relevance",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(apiUrl)
+        local localCorner = Instance.new("UICorner")
+        localCorner.CornerRadius = UDim.new(0, 8)
+        localCorner.Parent = btnLocalScript
+        
+        local btnServerScript = Instance.new("TextButton")
+        btnServerScript.Name = "ServerScriptBtn"
+        btnServerScript.Size = UDim2.new(0.48, 0, 1, 0)
+        btnServerScript.Position = UDim2.new(0.52, 0, 0, 0)
+        btnServerScript.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+        btnServerScript.Text = "ServerScript"
+        btnServerScript.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btnServerScript.TextSize = 14
+        btnServerScript.Font = Enum.Font.GothamBold
+        btnServerScript.BorderSizePixel = 0
+        btnServerScript.ZIndex = 102
+        btnServerScript.Parent = buttonContainer
+        
+        local serverCorner = Instance.new("UICorner")
+        serverCorner.CornerRadius = UDim.new(0, 8)
+        serverCorner.Parent = btnServerScript
+        
+        updateCodeDisplay("LocalScript")
+        
+        btnLocalScript.MouseButton1Click:Connect(function()
+            local code = updateCodeDisplay("LocalScript")
+            if setclipboard then
+                setclipboard(code)
+                showNotification("LocalScript copiado!", "L")
+            end
         end)
         
-        if success1 then
-            local decoded = HttpService:JSONDecode(response1)
-            if decoded and decoded.data then
-                for _, item in ipairs(decoded.data) do
-                    if item.id and item.name then
-                        table.insert(allModels, {id = item.id, name = item.name})
-                    end
-                end
+        btnServerScript.MouseButton1Click:Connect(function()
+            local code = updateCodeDisplay("ServerScript")
+            if setclipboard then
+                setclipboard(code)
+                showNotification("ServerScript copiado!", "S")
             end
-        end
-        
-        -- MÉTODO 2: API de Develop (Secundária - para mais resultados)
-        local success2, response2 = pcall(function()
-            local devUrl = string.format(
-                "https://develop.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(devUrl)
         end)
-        
-        if success2 then
-            local decoded2 = HttpService:JSONDecode(response2)
-            if decoded2 and decoded2.data then
-                for _, item in ipairs(decoded2.data) do
-                    if item.id and item.name then
-                        -- Evitar duplicatas
-                        local isDuplicate = false
-                        for _, existing in ipairs(allModels) do
-                            if existing.id == item.id then
-                                isDuplicate = true
-                                break
-                            end
-                        end
-                        if not isDuplicate then
-                            table.insert(allModels, {id = item.id, name = item.name})
-                        end
-                    end
-                end
-            end
-        end
-        
-        -- MÉTODO 3: API Avatar (para itens específicos)
-        local success3, response3 = pcall(function()
-            local avatarUrl = string.format(
-                "https://avatar.roblox.com/v1/catalog/items/search?keyword=%s&limit=100",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(avatarUrl)
-        end)
-        
-        if success3 then
-            local decoded3 = HttpService:JSONDecode(response3)
-            if decoded3 and decoded3.data then
-                for _, item in ipairs(decoded3.data) do
-                    if item.id and item.name and item.itemType == "Asset" then
-                        local isDuplicate = false
-                        for _, existing in ipairs(allModels) do
-                            if existing.id == item.id then
-                                isDuplicate = true
-                                break
-                            end
-                        end
-                        if not isDuplicate then
-                            table.insert(allModels, {id = item.id, name = item.name})
-                        end
-                    end
-                end
-            end
-        end
-        
-        -- Criar cards para todos os modelos encontrados
-        if #allModels > 0 then
-            statusLabel.Text = string.format("✅ %d modelos encontrados", #allModels)
-            
-            for i, modelData in ipairs(allModels) do
-                createModelCard(modelData)
-                foundCount = foundCount + 1
-                
-                -- Pequena pausa para não sobrecarregar
-                if i % 10 == 0 then
-                    wait(0.1)
-                end
-            end
-            
-            scrollFrame.CanvasSize = UDim2.new(0, 0, 0, gridLayout.AbsoluteContentSize.Y + 10)
-        else
-            statusLabel.Text = "❌ Nenhum modelo encontrado. Tente outra busca."
-        end
-        
-        -- Mensagem de diagnóstico
-        print(string.format("📊 Busca concluída: %d modelos encontrados", foundCount))
-        print("Método 1 (Catalog):", success1 and "✅" or "❌")
-        print("Método 2 (Develop):", success2 and "✅" or "❌")
-        print("Método 3 (Avatar):", success3 and "✅" or "❌")
-    end)
-end
-
--- =================== Criar botões de categoria ===================
-for i, cat in ipairs(categories) do
-    local catBtn = Instance.new("TextButton")
-    catBtn.Size = UDim2.new(0, 80, 1, 0)
-    catBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-    catBtn.Text = cat.name
-    catBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    catBtn.Font = Enum.Font.SourceSans
-    catBtn.TextSize = 14
-    catBtn.BorderSizePixel = 0
-    catBtn.Parent = categoryFrame
-    
-    local catCorner = Instance.new("UICorner")
-    catCorner.CornerRadius = UDim.new(0, 5)
-    catCorner.Parent = catBtn
-    
-    catBtn.MouseButton1Click:Connect(function()
-        currentCategory = cat.keyword
-        searchBox.Text = cat.keyword
-        searchToolbox(cat.keyword)
-        
-        -- Highlight categoria selecionada
-        for _, btn in ipairs(categoryFrame:GetChildren()) do
-            if btn:IsA("TextButton") then
-                btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-            end
-        end
-        catBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    end)
-end
-
--- =================== Eventos de busca ===================
-searchBtn.MouseButton1Click:Connect(function()
-    local searchText = searchBox.Text
-    if searchText ~= "" then
-        searchToolbox(searchText)
     else
-        searchToolbox("model")
-    end
-end)
-
-searchBox.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        if searchBox.Text ~= "" then
-       ivery (fallback)
-        if not success1 then
-            pcall(function()
-                thumbnail.Image = string.format("https://assetdelivery.roblox.com/v1/asset/?id=%d", assetData.id)
-            end)
-        end
+        local btnCopyCode = Instance.new("TextButton")
+        btnCopyCode.Name = "CopyCodeBtn"
+        btnCopyCode.Size = UDim2.new(1, 0, 1, 0)
+        btnCopyCode.Position = UDim2.new(0, 0, 0, 0)
+        btnCopyCode.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+        btnCopyCode.Text = "Copiar Codigo"
+        btnCopyCode.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btnCopyCode.TextSize = 14
+        btnCopyCode.Font = Enum.Font.GothamBold
+        btnCopyCode.BorderSizePixel = 0
+        btnCopyCode.ZIndex = 102
+        btnCopyCode.Parent = buttonContainer
         
-        -- Método 3: Direct AssetId (último fallback)
-        if thumbnail.Image == "rbxasset://textures/ui/GuiImagePlaceholder.png" then
-            pcall(function()
-                thumbnail.Image = string.format("rbxassetid://%d", assetData.id)
-            end)
-        end
-    end)
-    
-    -- Nome do modelo
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1, -10, 0, 35)
-    nameLabel.Position = UDim2.new(0, 5, 0, 110)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = assetData.name
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.Font = Enum.Font.SourceSans
-    nameLabel.TextSize = 13
-    nameLabel.TextWrapped = true
-    nameLabel.TextYAlignment = Enum.TextYAlignment.Top
-    nameLabel.Parent = card
-    
-    -- Botão de inserir
-    local insertBtn = Instance.new("TextButton")
-    insertBtn.Size = UDim2.new(1, -10, 0, 25)
-    insertBtn.Position = UDim2.new(0, 5, 1, -30)
-    insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    insertBtn.Text = "Inserir"
-    insertBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    insertBtn.Font = Enum.Font.SourceSansBold
-    insertBtn.TextSize = 14
-    insertBtn.BorderSizePixel = 0
-    insertBtn.Parent = card
-    
-    local insertCorner = Instance.new("UICorner")
-    insertCorner.CornerRadius = UDim.new(0, 5)
-    insertCorner.Parent = insertBtn
-    
-    -- Hover effect
-    insertBtn.MouseEnter:Connect(function()
-        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 100)
-    end)
-    
-    insertBtn.MouseLeave:Connect(function()
-        insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    end)
-    
-    -- Inserir modelo
-    insertBtn.MouseButton1Click:Connect(function()
-        insertBtn.Text = "Inserindo..."
-        insertBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+        local copyCorner = Instance.new("UICorner")
+        copyCorner.CornerRadius = UDim.new(0, 8)
+        copyCorner.Parent = btnCopyCode
         
-        spawn(function()
-            local success, result = pcall(function()
-                local model = InsertService:LoadAsset(assetData.id)
-                local item = model:GetChildren()[1]
-                
-                if item then
-                    item.Parent = workspace
-                    
-                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                        local hrp = player.Character.HumanoidRootPart
-                        
-                        if item:IsA("Model") and item.PrimaryPart then
-                            item:SetPrimaryPartCFrame(hrp.CFrame * CFrame.new(0, 0, -5))
-                        elseif item:IsA("BasePart") then
-                            item.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
-                        elseif item:IsA("Model") then
-                            item:MoveTo(hrp.Position + (hrp.CFrame.LookVector * 5))
-                        end
-                    end
-                end
-                
-                model:Destroy()
-                return true
-            end)
-            
-            wait(0.3)
-            
-            if success then
-                insertBtn.Text = "✓ Inserido"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
-                wait(1)
-                insertBtn.Text = "Inserir"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+        updateCodeDisplay()
+        
+        btnCopyCode.MouseButton1Click:Connect(function()
+            if setclipboard then
+                setclipboard(codeText.Text)
+                showNotification("Codigo copiado!", "!")
             else
-                insertBtn.Text = "✗ Erro"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-                warn("Erro ao inserir:", result)
-                wait(1)
-                insertBtn.Text = "Inserir"
-                insertBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+                showNotification("Funcao setclipboard nao disponivel!", "X")
             end
         end)
+    end
+    
+    exportCloseBtn.MouseButton1Click:Connect(function()
+        exportWindow:Destroy()
+    end)
+    
+    return exportWindow
+end
+
+-- FUNÇÕES
+
+-- Sistema de Som (Click)
+local function playClickSound()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://6895079853"
+    sound.Volume = 0.3
+    sound.Parent = game:GetService("SoundService")
+    sound:Play()
+    game:GetService("Debris"):AddItem(sound, 1)
+end
+
+-- Sistema de Notificação
+local function showNotification(message, icon)
+    local notification = Instance.new("Frame")
+    notification.Size = UDim2.new(1, 0, 0, 60)
+    notification.BackgroundColor3 = Color3.fromRGB(102, 126, 234)
+    notification.BorderSizePixel = 0
+    notification.Parent = notificationContainer
+    
+    local notifCorner = Instance.new("UICorner")
+    notifCorner.CornerRadius = UDim.new(0, 8)
+    notifCorner.Parent = notification
+    
+    local notifGradient = Instance.new("UIGradient")
+    notifGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(102, 126, 234)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(118, 75, 162))
+    }
+    notifGradient.Rotation = 135
+    notifGradient.Parent = notification
+    
+    local iconLabel = Instance.new("TextLabel")
+    iconLabel.Size = UDim2.new(0, 40, 1, 0)
+    iconLabel.Position = UDim2.new(0, 10, 0, 0)
+    iconLabel.BackgroundTransparency = 1
+    iconLabel.Text = icon or "OK"
+    iconLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    iconLabel.TextSize = 20
+    iconLabel.Font = Enum.Font.GothamBold
+    iconLabel.Parent = notification
+    
+    local messageLabel = Instance.new("TextLabel")
+    messageLabel.Size = UDim2.new(1, -60, 1, 0)
+    messageLabel.Position = UDim2.new(0, 50, 0, 0)
+    messageLabel.BackgroundTransparency = 1
+    messageLabel.Text = message
+    messageLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    messageLabel.TextSize = 14
+    messageLabel.Font = Enum.Font.Gotham
+    messageLabel.TextXAlignment = Enum.TextXAlignment.Left
+    messageLabel.TextWrapped = true
+    messageLabel.Parent = notification
+    
+    notification.Position = UDim2.new(1, 0, 0, 0)
+    local tweenIn = TweenService:Create(notification, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 0)})
+    tweenIn:Play()
+    
+    task.wait(3)
+    
+    local tweenOut = TweenService:Create(notification, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Position = UDim2.new(1, 0, 0, 0)})
+    tweenOut:Play()
+    tweenOut.Completed:Connect(function()
+        notification:Destroy()
     end)
 end
 
--- Função MELHORADA para buscar na API do Roblox com múltiplas tentativas
-local function searchToolbox(keyword)
-    clearResults()
-    statusLabel.Text = "🔄 Buscando modelos..."
-    
-    local searchTerm = keyword
-    if searchTerm == "" then
-        searchTerm = "model"
-    end
-    
-    spawn(function()
-        local allModels = {}
-        local foundCount = 0
-        
-        -- MÉTODO 1: API de Catálogo (Primária)
-        local success1, response1 = pcall(function()
-            local apiUrl = string.format(
-                "https://catalog.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120&sortType=Relevance",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(apiUrl)
-        end)
-        
-        if success1 then
-            local decoded = HttpService:JSONDecode(response1)
-            if decoded and decoded.data then
-                for _, item in ipairs(decoded.data) do
-                    table.insert(allModels, {id = item.id, name = item.name})
-                end
-            end
-        end
-        
-        -- MÉTODO 2: API de Develop (Secundária - para mais resultados)
-        local success2, response2 = pcall(function()
-            local devUrl = string.format(
-                "https://develop.roblox.com/v1/search/items?category=Model&keyword=%s&limit=120",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(devUrl)
-        end)
-        
-        if success2 then
-            local decoded2 = HttpService:JSONDecode(response2)
-            if decoded2 and decoded2.data then
-                for _, item in ipairs(decoded2.data) do
-                    -- Evitar duplicatas
-                    local isDuplicate = false
-                    for _, existing in ipairs(allModels) do
-                        if existing.id == item.id then
-                            isDuplicate = true
-                            break
-                        end
-                    end
-                    if not isDuplicate then
-                        table.insert(allModels, {id = item.id, name = item.name})
-                    end
-                end
-            end
-        end
-        
-        -- MÉTODO 3: API Avatar (para itens específicos)
-        local success3, response3 = pcall(function()
-            local avatarUrl = string.format(
-                "https://avatar.roblox.com/v1/catalog/items/search?keyword=%s&limit=100",
-                HttpService:UrlEncode(searchTerm)
-            )
-            return game:HttpGet(avatarUrl)
-        end)
-        
-        if success3 then
-            local decoded3 = HttpService:JSONDecode(response3)
-            if decoded3 and decoded3.data then
-                for _, item in ipairs(decoded3.data) do
-                    local isDuplicate = false
-                    for _, existing in ipairs(allModels) do
-                        if existing.id == item.id then
-                            isDuplicate = true
-                            break
-                        end
-                    end
-                    if not isDuplicate and item.itemType == "Asset" then
-                        table.insert(allModels, {id = item.id, name = item.name})
-                    end
-                end
-            end
-        end
-        
-        -- Criar cards para todos os modelos encontrados
-        if #allModels > 0 then
-            statusLabel.Text = string.format("✅ %d modelos encontrados", #allModels)
-            
-            for i, modelData in ipairs(allModels) do
-                createModelCard(modelData)
-                foundCount = foundCount + 1
-                
-                -- Pequena pausa para não sobrecarregar
-                if i % 10 == 0 then
-                    wait(0.1)
-                end
-            end
-            
-            scrollFrame.CanvasSize = UDim2.new(0, 0, 0, gridLayout.AbsoluteContentSize.Y + 10)
-        else
-            statusLabel.Text = "❌ Nenhum modelo encontrado. Tente outra busca."
-        end
-        
-        -- Mensagem de diagnóstico
-        print(string.format("📊 Busca concluída: %d modelos encontrados", foundCount))
-        print("Método 1 (Catalog):", success1 and "✅" or "❌")
-        print("Método 2 (Develop):", success2 and "✅" or "❌")
-        print("Método 3 (Avatar):", success3 and "✅" or "❌")
-    end)
-end
+-- Eventos dos Botões
 
--- =================== Criar botões de categoria ===================
-for i, cat in ipairs(categories) do
-    local catBtn = Instance.new("TextButton")
-    catBtn.Size = UDim2.new(0, 80, 1, 0)
-    catBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-    catBtn.Text = cat.name
-    catBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    catBtn.Font = Enum.Font.SourceSans
-    catBtn.TextSize = 14
-    catBtn.BorderSizePixel = 0
-    catBtn.Parent = categoryFrame
-    
-    local catCorner = Instance.new("UICorner")
-    catCorner.CornerRadius = UDim.new(0, 5)
-    catCorner.Parent = catBtn
-    
-    catBtn.MouseButton1Click:Connect(function()
-        currentCategory = cat.keyword
-        searchBox.Text = cat.keyword
-        searchToolbox(cat.keyword)
-        
-        -- Highlight categoria selecionada
-        for _, btn in ipairs(categoryFrame:GetChildren()) do
-            if btn:IsA("TextButton") then
-                btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-            end
-        end
-        catBtn.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
-    end)
-end
-
--- =================== Eventos de busca ===================
-searchBtn.MouseButton1Click:Connect(function()
-    local searchText = searchBox.Text
-    if searchText ~= "" then
-        searchToolbox(searchText)
-    else
-        searchToolbox("model")
-    end
+toggleButton.MouseButton1Click:Connect(function()
+    playClickSound()
+    mainWindow.Visible = not mainWindow.Visible
 end)
 
-searchBox.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        if searchBox.Text ~= "" then
-            searchToolbox(searchBox.Text)
-        else
-            searchToolbox("model")
-        end
-    end
-end)
-
--- =================== Aplicar arrasto ===================
-local toggleDragging = makeDraggable(toggleBtn, toggleBtn)
-makeDraggable(mainFrame, titleFrame)
-
--- =================== Toggle click ===================
-toggleBtn.MouseButton1Click:Connect(function()
-    if not toggleDragging() then
-        clickSound:Play()
-        mainFrame.Visible = not mainFrame.Visible
-    end
-end)
-
--- =================== Botões de controle ===================
-local minimized = false
 minimizeBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    contentFrame.Visible = not minimized
-    
-    if minimized then
-        mainFrame.Size = UDim2.new(0, 450, 0, 40)
-    else
-        mainFrame.Size = UDim2.new(0, 450, 0, 550)
-    end
+    playClickSound()
+    mainWindow.Visible = false
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-    gui:Destroy()
+    playClickSound()
+    screenGui:Destroy()
+    _G.BlenderAnimLiteCore = nil
 end)
 
-print("🎨 Blender ToolBox carregada! Digite algo")
+btnKEY.MouseButton1Click:Connect(function()
+    playClickSound()
+    local time = addKeyframe()
+    updateKeyframeMarkers()
+    showNotification(string.format("Keyframe adicionado em %.1fs!", time), "K")
+    timelineTime = timelineTime + timeStep
+    timelineLabel.Text = string.format("TIMELINE - Tempo: %.1fs", timelineTime)
+end)
+
+btnPLAY.MouseButton1Click:Connect(function()
+    playClickSound()
+    playAnimation()
+    showNotification("Reproduzindo animacao!", ">")
+end)
+
+btnSTOP.MouseButton1Click:Connect(function()
+    playClickSound()
+    stopAnimation()
+    showNotification("Animacao parada!", "[]")
+end)
+
+btnLoop.MouseButton1Click:Connect(function()
+    playClickSound()
+    isLooping = not isLooping
+    if isLooping then
+        btnLoop.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+        showNotification("Loop ATIVADO!", "∞")
+    else
+        btnLoop.BackgroundColor3 = Color3.fromRGB(138, 43, 226)
+        showNotification("Loop DESATIVADO!", "||")
+    end
+end)
+
+btnEXPORT.MouseButton1Click:Connect(function()
+    playClickSound()
+    
+    if not next(animationData) then
+        showNotification("Nenhuma animacao para exportar!", "!")
+        return
+    end
+    
+    createExportWindow()
+end)
+
+btn1.MouseButton1Click:Connect(function()
+    playClickSound()
+    -- Função OPEN - Carregar animação JSON
+    showNotification("Funcao OPEN - Em desenvolvimento", "O")
+end)
+
+btn2.MouseButton1Click:Connect(function()
+    playClickSound()
+    -- Função SAVE - Salvar animação JSON
+    local json = saveAnimationToJSON()
+    if setclipboard then
+        setclipboard(json)
+        showNotification("Animacao salva (JSON copiado)!", "S")
+    else
+        showNotification("JSON gerado mas clipboard indisponivel", "!")
+    end
+end)
+
+btn3.MouseButton1Click:Connect(function()
+    playClickSound()
+    resetPose()
+    showNotification("Pose resetada!", "R")
+end)
+
+btn4.MouseButton1Click:Connect(function()
+    playClickSound()
+    timelineTime = 0
+    timelineHandle.Position = UDim2.new(0, 0, 0.5, -25)
+    timelineLabel.Text = "TIMELINE - Tempo: 0.0s"
+    showNotification("Timeline resetada!", "<")
+end)
+
+btnMinus.MouseButton1Click:Connect(function()
+    playClickSound()
+    currentSpeed = math.max(0.1, currentSpeed - 0.1)
+    btn120.Text = string.format("%.1fx", currentSpeed)
+    showNotification(string.format("Velocidade: %.1fx", currentSpeed), "-")
+end)
+
+btnPlus.MouseButton1Click:Connect(function()
+    playClickSound()
+    currentSpeed = math.min(5.0, currentSpeed + 0.1)
+    btn120.Text = string.format("%.1fx", currentSpeed)
+    showNotification(string.format("Velocidade: %.1fx", currentSpeed), "+")
+end)
+
+btn120.MouseButton1Click:Connect(function()
+    playClickSound()
+    currentSpeed = 1.0
+    btn120.Text = "1.0x"
+    showNotification("Velocidade resetada para 1.0x", "!")
+end)
+
+btn05.MouseButton1Click:Connect(function()
+    playClickSound()
+    currentSpeed = 0.5
+    btn120.Text = "0.5x"
+    showNotification("Velocidade: 0.5x", "S")
+end)
+
+btnRET.MouseButton1Click:Connect(function()
+    playClickSound()
+    stopAnimation()
+    resetPose()
+    timelineTime = 0
+    timelineHandle.Position = UDim2.new(0, 0, 0.5, -25)
+    timelineLabel.Text = "TIMELINE - Tempo: 0.0s"
+    showNotification("Voltou ao inicio!", "<")
+end)
+
+btnLinear.MouseButton1Click:Connect(function()
+    playClickSound()
+    local styles = {"Linear", "Sine", "Quad", "Cubic", "Elastic", "Bounce", "Smooth"}
+    local currentIndex = 1
+    for i, style in ipairs(styles) do
+        if style == easingStyle then
+            currentIndex = i
+            break
+        end
+    end
+    currentIndex = (currentIndex % #styles) + 1
+    easingStyle = styles[currentIndex]
+    btnLinear.Text = easingStyle
+    showNotification("Easing: " .. easingStyle, "~")
+end)
+
+btnOut.MouseButton1Click:Connect(function()
+    playClickSound()
+    local directions = {"In", "Out", "InOut"}
+    local currentIndex = 1
+    for i, dir in ipairs(directions) do
+        if dir == easingDirection then
+            currentIndex = i
+            break
+        end
+    end
+    currentIndex = (currentIndex % #directions) + 1
+    easingDirection = directions[currentIndex]
+    btnOut.Text = easingDirection
+    showNotification("Direction: " .. easingDirection, "~")
+end)
+
+btnChangeMode.MouseButton1Click:Connect(function()
+    playClickSound()
+    local modes = {"Botao", "Tool", "Dummy"}
+    local icons = {"B", "T", "D"}
+    
+    local currentIndex = 1
+    for i, mode in ipairs(modes) do
+        if mode == currentMode then
+            currentIndex = i
+            break
+        end
+    end
+    
+    currentIndex = (currentIndex % #modes) + 1
+    currentMode = modes[currentIndex]
+    
+    toggleText.Text = string.upper(currentMode)
+    toggleImage.Text = icons[currentIndex]
+    
+    showNotification("Modo alterado para: " .. currentMode, icons[currentIndex])
+end)
+
+-- Atalhos de Teclado
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Ctrl + Z = Undo
+    if input.KeyCode == Enum.KeyCode.Z and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        if undo() then
+            updateKeyframeMarkers()
+            showNotification("Undo realizado!", "↶")
+        end
+    end
+    
+    -- Ctrl + Y = Redo
+    if input.KeyCode == Enum.KeyCode.Y and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        if redo() then
+            updateKeyframeMarkers()
+            showNotification("Redo realizado!", "↷")
+        end
+    end
+    
+    -- Delete = Deletar keyframe atual
+    if input.KeyCode == Enum.KeyCode.Delete then
+        if deleteKeyframe(timelineTime) then
+            updateKeyframeMarkers()
+            showNotification("Keyframe deletado!", "X")
+        end
+    end
+    
+    -- Ctrl + C = Copiar keyframe
+    if input.KeyCode == Enum.KeyCode.C and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        if copyKeyframe(timelineTime) then
+            showNotification("Keyframe copiado!", "C")
+        end
+    end
+    
+    -- Ctrl + V = Colar keyframe
+    if input.KeyCode == Enum.KeyCode.V and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        if pasteKeyframe(timelineTime) then
+            updateKeyframeMarkers()
+            showNotification("Keyframe colado!", "V")
+        end
+    end
+    
+    -- M = Mirror (Espelhar)
+    if input.KeyCode == Enum.KeyCode.M then
+        mirrorAnimation()
+        updateKeyframeMarkers()
+        showNotification("Animacao espelhada!", "M")
+    end
+    
+    -- R = Reverse (Reverter)
+    if input.KeyCode == Enum.KeyCode.R then
+        if reverseAnimation() then
+            updateKeyframeMarkers()
+            showNotification("Animacao revertida!", "R")
+        end
+    end
+    
+    -- Space = Play/Stop
+    if input.KeyCode == Enum.KeyCode.Space then
+        if isPlaying then
+            stopAnimation()
+            showNotification("Animacao parada!", "[]")
+        else
+            playAnimation()
+            showNotification("Reproduzindo animacao!", ">")
+        end
+    end
+end)
+
+-- Salvar histórico inicial
+saveToHistory()
+
+print("==============================================")
+print("Blender Animator Lite carregado com sucesso!")
+print("==============================================")
+print("FUNCOES ADICIONADAS:")
+print("- Undo/Redo (Ctrl+Z / Ctrl+Y)")
+print("- Copiar/Colar Keyframes (Ctrl+C / Ctrl+V)")
+print("- Deletar Keyframe (Delete)")
+print("- Espelhar Animacao (M)")
+print("- Reverter Animacao (R)")
+print("- Salvar/Carregar JSON (Botoes SAVE/OPEN)")
+print("- Interpolar Keyframes")
+print("- Escalar Tempo da Animacao")
+print("- Mover Keyframes")
+print("- Easings Adicionais (Cubic, Elastic, Bounce)")
+print("- Play/Stop com Space")
+print("==============================================")
+print("Total de keyframes disponiveis: " .. #partsToRecord)
+print("Use KEY para adicionar keyframes na pose atual")
+print("Use PLAY para reproduzir a animacao")
+print("Use EXPORTAR para copiar o script da animacao")
+print("==============================================")
