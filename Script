@@ -1,3 +1,7 @@
-loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Roblox-Studio-Lite/refs/heads/main/Teste"))()
+task.spawn(function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Roblox-Studio-Lite/refs/heads/main/Teste"))()
+end)
 
-loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Expoiler/refs/heads/main/ConfigExpoiler"))()
+task.spawn(function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Expoiler/refs/heads/main/ConfigExpoiler"))()
+end)
