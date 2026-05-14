@@ -1,1 +1,3 @@
 loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Roblox-Studio-Lite/refs/heads/main/Teste"))()
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/LKDev126/Expoiler/refs/heads/main/ConfigExpoiler"))()
